@@ -397,33 +397,26 @@ public sealed class ClientOverlayAndSettingsTests
     {
         var appIcon = StatusIconGenerator.GetAppIcon();
         Assert.IsNotNull(appIcon);
-        Assert.AreEqual(32, appIcon.Width);
-        Assert.AreEqual(32, appIcon.Height);
+        using (var expectedAppIcon = new Icon(GetAssetPath("app.ico")))
+        {
+            Assert.AreEqual(expectedAppIcon.Width, appIcon.Width);
+            Assert.AreEqual(expectedAppIcon.Height, appIcon.Height);
+        }
 
         using var mutedBmp = StatusIconGenerator.GetMicMutedBitmap();
-        Assert.IsNotNull(mutedBmp);
-        Assert.AreEqual(808, mutedBmp.Width);
-        Assert.AreEqual(1394, mutedBmp.Height);
+        AssertBitmapMatchesAsset(mutedBmp, "mic-muted.png");
 
         using var unmutedBmp = StatusIconGenerator.GetMicUnmutedBitmap();
-        Assert.IsNotNull(unmutedBmp);
-        Assert.AreEqual(787, unmutedBmp.Width);
-        Assert.AreEqual(1393, unmutedBmp.Height);
+        AssertBitmapMatchesAsset(unmutedBmp, "mic-unmuted.png");
 
         using var deviceDiscBmp = StatusIconGenerator.GetDeviceDisconnectedBitmap();
-        Assert.IsNotNull(deviceDiscBmp);
-        Assert.AreEqual(808, deviceDiscBmp.Width);
-        Assert.AreEqual(1269, deviceDiscBmp.Height);
+        AssertBitmapMatchesAsset(deviceDiscBmp, "device-disconnected.png");
 
         using var discBmp = StatusIconGenerator.GetServerDisconnectedBitmap();
-        Assert.IsNotNull(discBmp);
-        Assert.AreEqual(1079, discBmp.Width);
-        Assert.AreEqual(1077, discBmp.Height);
+        AssertBitmapMatchesAsset(discBmp, "server-disconnected.png");
 
         using var pauseBmp = StatusIconGenerator.GetPauseBitmap();
-        Assert.IsNotNull(pauseBmp);
-        Assert.AreEqual(714, pauseBmp.Width);
-        Assert.AreEqual(1229, pauseBmp.Height);
+        AssertBitmapMatchesAsset(pauseBmp, "pause.png");
 
         // Test all status icons for Client
         foreach (MicState state in Enum.GetValues<MicState>())
@@ -442,6 +435,42 @@ public sealed class ClientOverlayAndSettingsTests
             Assert.AreEqual(32, serverIcon.Width);
             Assert.AreEqual(32, serverIcon.Height);
         }
+    }
+
+    private static string GetAssetPath(string fileName)
+    {
+        var current = AppDomain.CurrentDomain.BaseDirectory;
+        while (!string.IsNullOrEmpty(current))
+        {
+            var candidate = Path.Combine(current, "assets", fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            current = Directory.GetParent(current)?.FullName;
+        }
+
+        current = Directory.GetCurrentDirectory();
+        while (!string.IsNullOrEmpty(current))
+        {
+            var candidate = Path.Combine(current, "assets", fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+            current = Directory.GetParent(current)?.FullName;
+        }
+
+        throw new FileNotFoundException($"Asset '{fileName}' was not found in any parent 'assets' directory.");
+    }
+
+    private static void AssertBitmapMatchesAsset(Bitmap? actualBmp, string assetFileName)
+    {
+        Assert.IsNotNull(actualBmp, $"Expected {assetFileName} bitmap to load successfully, but it was null.");
+        var assetPath = GetAssetPath(assetFileName);
+        using var expectedBmp = new Bitmap(assetPath);
+        Assert.AreEqual(expectedBmp.Width, actualBmp.Width, $"Width mismatch for {assetFileName}");
+        Assert.AreEqual(expectedBmp.Height, actualBmp.Height, $"Height mismatch for {assetFileName}");
     }
 
     [TestMethod]
