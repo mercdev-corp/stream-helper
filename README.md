@@ -312,7 +312,7 @@ flowchart TD
   - `win-x64` (64-bit Intel/AMD)
   - `win-x86` (32-bit Intel/AMD)
   - `win-arm64` (64-bit ARM)
-- Packages the Server and Client executables for each architecture into zip archives (`mic-helper-win-x64.zip`, `mic-helper-win-x86.zip`, `mic-helper-win-arm64.zip`).
+- Packages the Server and Client executables for each architecture into zip archives (`mic-helper-<version>-win-x64.zip`, `mic-helper-<version>-win-x86.zip`, `mic-helper-<version>-win-arm64.zip`).
 - Publishes a new GitHub Release with attached zip packages and auto-generated release notes.
 
 ## License
