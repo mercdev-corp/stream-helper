@@ -95,7 +95,6 @@ jobs:
           $platforms = @("win-x64", "win-x86", "win-arm64")
 
           foreach ($rid in $platforms) {
-              $zipPath = "release_packages/mic-helper-$rid.zip"
               $serverExe = "bin/$rid/MicHelper.Server.exe"
               $clientExe = "bin/$rid/MicHelper.Client.exe"
 
@@ -105,6 +104,17 @@ jobs:
               if (-not (Test-Path $clientExe)) {
                   throw "Missing Client executable: $clientExe"
               }
+
+              $appVersion = (Get-Item $serverExe).VersionInfo.ProductVersion
+              if (-not $appVersion) {
+                  $appVersion = (Get-Item $serverExe).VersionInfo.FileVersion
+              }
+              if (-not $appVersion) {
+                  $appVersion = "${{ steps.tag_step.outputs.raw_version }}"
+              }
+              $appVersion = ($appVersion -split '\+')[0].Trim()
+
+              $zipPath = "release_packages/mic-helper-$appVersion-$rid.zip"
 
               Write-Host "Creating archive $zipPath with Server and Client executables..." -ForegroundColor Cyan
               Compress-Archive -Path $serverExe, $clientExe -DestinationPath $zipPath -Force
