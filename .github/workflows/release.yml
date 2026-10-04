@@ -20,6 +20,9 @@ jobs:
   release:
     name: Build & Publish Release
     runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      TESTINGPLATFORM_TELEMETRY_OPTOUT: 'true'
 
     steps:
       - name: Checkout repository
@@ -95,8 +98,8 @@ jobs:
           $platforms = @("win-x64", "win-x86", "win-arm64")
 
           foreach ($rid in $platforms) {
-              $serverExe = "bin/$rid/MicHelper.Server.exe"
-              $clientExe = "bin/$rid/MicHelper.Client.exe"
+              $serverExe = "bin/$rid/StreamHelper.Server.exe"
+              $clientExe = "bin/$rid/StreamHelper.Client.exe"
 
               if (-not (Test-Path $serverExe)) {
                   throw "Missing Server executable: $serverExe"
@@ -114,7 +117,7 @@ jobs:
               }
               $appVersion = ($appVersion -split '\+')[0].Trim()
 
-              $zipPath = "release_packages/mic-helper-$appVersion-$rid.zip"
+              $zipPath = "release_packages/stream-helper-$appVersion-$rid.zip"
 
               Write-Host "Creating archive $zipPath with Server and Client executables..." -ForegroundColor Cyan
               Compress-Archive -Path $serverExe, $clientExe -DestinationPath $zipPath -Force

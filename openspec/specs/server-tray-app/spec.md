@@ -7,19 +7,27 @@ Specifies the server system tray user interface, status representations, context
 ## Requirements
 
 ### Requirement: Server System Tray Status Visualization
-The server application SHALL display a system tray icon reflecting the current operational state: Paused, Disconnected, Microphone Muted, or Microphone Unmuted.
+The server application SHALL display a system tray icon reflecting the current operational state: Active (`obs-logo-blue.png`, tooltip "Helper is active"), Paused (`pause.png`, tooltip "Helper is paused"), OBS Disconnected (`obs-disconnected.png`, tooltip "OBS is not running"), OBS Reconnecting (`obs-reconnect.png`, tooltip "OBS reconnecting"), OBS Network Issue (`obs-network-issue.png`, tooltip "OBS network issue"), OBS Render/Encoding Issue (`obs-render-issue.png`, tooltip "OBS render issue"), Microphone Muted (`mic-muted.png`, tooltip "Microphone muted"), Microphone Disconnected (`device-disconnected.png`, tooltip "Microphone disconnected"), OBS Capture Device Disconnected (`device-disconnected.png`, tooltip "OBS capture device disconnected"), OBS Capture Device Muted (`sound-muted.png`, tooltip "OBS capture device muted"), or OBS Sound Capture Issue (`sound-issue.png`, tooltip "OBS sound capture issue"). If more than one status is active simultaneously, the tray icon SHALL cycle through active status icons once per second, listing all active descriptions line-by-line in the tooltip on hover.
 
 #### Scenario: Display muted state
 - **WHEN** the monitored microphone is in a muted state and the server is active
-- **THEN** the system tray shows the microphone muted icon
+- **THEN** the system tray shows the microphone muted icon with tooltip "Microphone muted"
 
 #### Scenario: Display device disconnected state
-- **WHEN** the monitored microphone is disconnected or not found
-- **THEN** the system tray shows the disconnected icon
+- **WHEN** the monitored microphone or OBS capture device is disconnected or not found
+- **THEN** the system tray shows the disconnected icon with the corresponding tooltip ("Microphone disconnected" or "OBS capture device disconnected")
 
 #### Scenario: Display paused state
 - **WHEN** the user pauses the server
-- **THEN** the system tray shows the paused icon
+- **THEN** the system tray shows the paused icon with tooltip "Helper is paused"
+
+#### Scenario: Server healthy state
+- **WHEN** the server is active and no OBS, audio, or microphone issues are detected
+- **THEN** the system tray displays the default blue icon (`obs-logo-blue.png`) with the tooltip "Helper is active"
+
+#### Scenario: Multiple statuses active in server tray
+- **WHEN** multiple issues are simultaneously active (such as OBS network issue and microphone muted)
+- **THEN** the system tray icon cycles through the active status icons once every 1 second, and the hover tooltip displays a bulleted line-by-line list of all active issues
 
 ### Requirement: Context Menu Navigation
 The server application SHALL provide a right-click context menu on the system tray icon with Pause/Resume, Settings, Donate, and Exit options, with Donate positioned immediately below Settings.
@@ -41,15 +49,15 @@ The server application SHALL provide a right-click context menu on the system tr
 - **THEN** the application cleanly unregisters callbacks, closes the tray icon, and terminates
 
 ### Requirement: Local JSON Settings Persistence
-The server application SHALL store all configuration settings in `mic-helper-server-settings.json` located strictly within the application's executable directory.
+The server application SHALL store all configuration settings in `stream-helper-server-settings.json` located strictly within the application's executable directory.
 
 #### Scenario: Settings saved on modification
-- **WHEN** any setting (microphone, port, retry timeout, paused state) is modified in the dialog or context menu
-- **THEN** changes are saved immediately to `mic-helper-server-settings.json` in the local directory and applied live
+- **WHEN** any setting (OBS parameters, skipped frames threshold, audio devices, port, retry timeout, paused state) is modified in the dialog or context menu
+- **THEN** changes are saved immediately to `stream-helper-server-settings.json` in the local directory and applied live
 
 #### Scenario: Isolated configuration for different directories
-- **WHEN** two server executables run from different folders (e.g., `C:\Mic1` and `C:\Mic2`)
-- **THEN** each server reads and writes exclusively to its own folder's `mic-helper-server-settings.json` without cross-instance interference
+- **WHEN** two server executables run from different folders (e.g., `C:\Server1` and `C:\Server2`)
+- **THEN** each server reads and writes exclusively to its own folder's `stream-helper-server-settings.json` without cross-instance interference
 
 ### Requirement: Microphone Selection with Missing Device Indication
 The settings dialog SHALL provide a dropdown list of available microphones, defaulting to the system default on first run, rendering distinct badges for general default and communications default devices when they differ, and rendering a missing configured microphone in red strikethrough text.
@@ -60,14 +68,25 @@ The settings dialog SHALL provide a dropdown list of available microphones, defa
 
 #### Scenario: Missing microphone persists unless changed
 - **WHEN** the settings dialog is closed without selecting a different microphone
-- **THEN** the missing microphone remains preserved in `mic-helper-server-settings.json`
+- **THEN** the missing microphone remains preserved in `stream-helper-server-settings.json`
 
 #### Scenario: Distinct default device indication
 - **WHEN** the system has distinct default console and communications capture devices
 - **THEN** the dropdown indicates the primary console default microphone with `(Default)` and the communications default microphone with `(Default Communications)`
 
+### Requirement: Dropdown Alphabetical Ordering with Missing Item Precedence
+All dropdown selectors in the server settings dialog (including Microphone selection and OBS Audio Source selection) SHALL sort their displayed items in case-insensitive alphabetical order by display text, EXCEPT when the currently selected option is in a missing state (rendered with red strikethrough text)—in which case that selected missing item SHALL be placed as the first option in the list, followed by the remaining active items sorted in alphabetical order.
+
+#### Scenario: All available options sorted alphabetically
+- **WHEN** a dropdown in the server settings dialog is populated and the selected option is an active, available device or source
+- **THEN** all items in the dropdown are sorted in alphabetical order by display text
+
+#### Scenario: Missing selected option positioned first
+- **WHEN** a dropdown in the server settings dialog is populated and the selected configured option is missing (rendered with red strikethrough text)
+- **THEN** the selected missing option is placed as the first item in the list, and all remaining active items are sorted in alphabetical order
+
 ### Requirement: Port Number Configuration and In-Use Collision Detection
-The settings dialog SHALL allow configuring the broadcast port (default 13205) and detect if the specified port is already bound by another process or another server instance.
+The settings dialog SHALL allow configuring the broadcast port (default 19205) and detect if the specified port is already bound by another process or another server instance.
 
 #### Scenario: Port in use validation
 - **WHEN** the user enters a port number that is already in use
@@ -117,3 +136,13 @@ The server settings dialog SHALL maintain a consistent minimum right margin of 2
 - **WHEN** the server settings dialog is opened
 - **THEN** all controls, buttons, and descriptive labels maintain at least 20 pixels of clearance from the right edge of the window
 
+### Requirement: OBS Connection and Health Configuration Controls
+The server settings dialog SHALL provide controls for configuring the OBS Studio WebSocket connection (IP address input default `127.0.0.1`, port input default `4455`, password with reveal/hide toggle), skipped frames threshold per minute, and a dropdown for selecting the OBS game audio capture device with red strikethrough styling for missing sources.
+
+#### Scenario: Configure OBS connection parameters
+- **WHEN** the user updates the OBS IP, port, or password in the server settings dialog
+- **THEN** the settings are saved immediately and the OBS monitor attempts to connect or re-authenticate using the new credentials
+
+#### Scenario: Missing OBS audio capture device in settings dropdown
+- **WHEN** the server settings dialog opens and the saved OBS audio source is not found in OBS Studio
+- **THEN** the missing device is rendered as the first item with red strikethrough styling, followed by all available OBS audio inputs

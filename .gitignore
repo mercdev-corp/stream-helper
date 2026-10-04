@@ -58,7 +58,10 @@ nunit-*.xml
 
 # Local environment & settings
 .dotnet_home/
+.tmp/
+.test_tmp/
 mic-helper-*-settings.json
+stream-helper-*-settings.json
 bin/
 cache/
 *.log
@@ -68,3 +71,4 @@ cache/
 # Python
 __pycache__/
 *.py[co]
+tmp.*

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\assets\mic-muted.png" Link="Assets\mic-muted.png" />
+    <EmbeddedResource Include="..\..\assets\device-disconnected.png" Link="Assets\device-disconnected.png" />
+    <EmbeddedResource Include="..\..\assets\server-disconnected.png" Link="Assets\server-disconnected.png" />
+    <EmbeddedResource Include="..\..\assets\pause.png" Link="Assets\pause.png" />
+    <EmbeddedResource Include="..\..\assets\obs-disconnected.png" Link="Assets\obs-disconnected.png" />
+    <EmbeddedResource Include="..\..\assets\obs-logo-blue.png" Link="Assets\obs-logo-blue.png" />
+    <EmbeddedResource Include="..\..\assets\obs-logo-red.png" Link="Assets\obs-logo-red.png" />
+    <EmbeddedResource Include="..\..\assets\obs-network-issue.png" Link="Assets\obs-network-issue.png" />
+    <EmbeddedResource Include="..\..\assets\obs-reconnect.png" Link="Assets\obs-reconnect.png" />
+    <EmbeddedResource Include="..\..\assets\obs-render-issue.png" Link="Assets\obs-render-issue.png" />
+    <EmbeddedResource Include="..\..\assets\sound-issue.png" Link="Assets\sound-issue.png" />
+    <EmbeddedResource Include="..\..\assets\sound-muted.png" Link="Assets\sound-muted.png" />
+    <EmbeddedResource Include="..\..\assets\app.ico" Link="Assets\app.ico" />
+    <EmbeddedResource Include="..\..\DONATE" Link="DONATE" />
+  </ItemGroup>
+
+</Project>

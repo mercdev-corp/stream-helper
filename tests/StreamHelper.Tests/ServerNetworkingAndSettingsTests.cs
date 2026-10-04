@@ -1,0 +1,591 @@
+using System.Net;
+using System.Net.Sockets;
+using StreamHelper.Server;
+using StreamHelper.Server.Config;
+using StreamHelper.Server.UI;
+using StreamHelper.Shared.Audio;
+using StreamHelper.Shared.Network;
+using StreamHelper.Shared.Protocol;
+using StreamHelper.Shared.UI;
+using StreamHelper.Shared.Common;
+using StreamHelper.Shared.Obs;
+
+namespace StreamHelper.Tests;
+
+[TestClass]
+public sealed class ServerNetworkingAndSettingsTests
+{
+    [TestMethod]
+    public void ServerSettings_SaveAndLoad_RoundtripsSuccessfully()
+    {
+        var tempFolder = TestDirectory.Create("ServerSettingsTest");
+
+        try
+        {
+            var original = new ServerSettings
+            {
+                RunOnStartup = true,
+                MicrophoneId = "mic-12345",
+                MicrophoneName = "HyperX QuadCast",
+                Port = 13999,
+                RetryTimeout = 8,
+                IsPaused = true,
+                DebugLogging = true
+            };
+
+            original.Save(tempFolder);
+
+            var filePath = ServerSettings.GetFilePath(tempFolder);
+            Assert.IsTrue(File.Exists(filePath));
+
+            var loaded = ServerSettings.Load(tempFolder);
+            Assert.AreEqual(original.RunOnStartup, loaded.RunOnStartup);
+            Assert.AreEqual(original.MicrophoneId, loaded.MicrophoneId);
+            Assert.AreEqual(original.MicrophoneName, loaded.MicrophoneName);
+            Assert.AreEqual(original.Port, loaded.Port);
+            Assert.AreEqual(original.RetryTimeout, loaded.RetryTimeout);
+            Assert.AreEqual(original.IsPaused, loaded.IsPaused);
+            Assert.AreEqual(original.DebugLogging, loaded.DebugLogging);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void NetworkUtils_DetectsBoundUdpPort()
+    {
+        // Bind an ephemeral UDP port
+        using var testSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        testSocket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var boundPort = ((IPEndPoint)testSocket.LocalEndPoint!).Port;
+
+        // Port should be detected as in use
+        var inUse = NetworkUtils.IsUdpPortInUse(boundPort);
+        Assert.IsTrue(inUse);
+    }
+
+    [TestMethod]
+    public async Task UdpBroadcaster_StateChange_EmitsBurstOfThreePackets()
+    {
+        int testPort = 13290;
+        using var broadcaster = new UdpBroadcaster(testPort);
+
+        var packetsSent = new List<StatusPacket>();
+        broadcaster.PacketSent += packet =>
+        {
+            lock (packetsSent)
+            {
+                packetsSent.Add(packet);
+            }
+        };
+
+        // Trigger state transition
+        broadcaster.UpdateState(MicState.Muted, "Test Mic");
+
+        // Wait up to 3 seconds for 3 burst packets
+        var timeout = DateTime.UtcNow.AddSeconds(3);
+        while (DateTime.UtcNow < timeout)
+        {
+            lock (packetsSent)
+            {
+                if (packetsSent.Count >= 3) break;
+            }
+            await Task.Delay(20);
+        }
+
+        lock (packetsSent)
+        {
+            Assert.IsGreaterThanOrEqualTo(3, packetsSent.Count);
+            Assert.IsTrue(packetsSent.All(p => p.State == MicState.Muted));
+            Assert.IsTrue(packetsSent.All(p => p.Type == PacketType.StateChange));
+        }
+    }
+
+    [TestMethod]
+    public async Task UdpBroadcaster_SetPaused_EmitsPausedPacket()
+    {
+        int testPort = 13291;
+        using var broadcaster = new UdpBroadcaster(testPort);
+
+        var packetsSent = new List<StatusPacket>();
+        broadcaster.PacketSent += packet =>
+        {
+            lock (packetsSent)
+            {
+                packetsSent.Add(packet);
+            }
+        };
+
+        broadcaster.SetPaused(true);
+
+        var timeout = DateTime.UtcNow.AddSeconds(3);
+        while (DateTime.UtcNow < timeout)
+        {
+            lock (packetsSent)
+            {
+                if (packetsSent.Any(p => p.State == MicState.Paused)) break;
+            }
+            await Task.Delay(20);
+        }
+
+        lock (packetsSent)
+        {
+            Assert.IsTrue(packetsSent.Any(p => p.State == MicState.Paused));
+            Assert.IsTrue(broadcaster.IsPaused);
+        }
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_CanOpenAndHandleCreated_AfterIconDisposed()
+    {
+        // Simulate tray icon disposing the application icon
+        var previousIcon = StatusIconGenerator.GetAppIcon();
+        previousIcon.Dispose();
+
+        var settings = new ServerSettings();
+        using var audioMonitor = new WindowsAudioMonitor();
+        using var form = new ServerSettingsForm(settings, audioMonitor, _ => {}, _ => {}, _ => {});
+
+        _ = form.Handle;
+        Assert.IsTrue(form.IsHandleCreated);
+        Assert.IsNotNull(form.Icon);
+        Assert.AreEqual(32, form.Icon.Width);
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_DisplaysVersionLabelBetweenButtons()
+    {
+        var settings = new ServerSettings();
+        using var audioMonitor = new WindowsAudioMonitor();
+        using var form = new ServerSettingsForm(settings, audioMonitor, _ => {}, _ => {}, _ => {});
+        _ = form.Handle;
+
+        Assert.IsNotNull(form.VersionLabel);
+        Assert.AreEqual(AppVersion.DisplayVersion, form.VersionLabel.Text);
+        Assert.AreEqual(ContentAlignment.MiddleCenter, form.VersionLabel.TextAlign);
+        Assert.AreEqual(SystemColors.GrayText, form.VersionLabel.ForeColor);
+        Assert.IsTrue(form.Controls.Contains(form.VersionLabel));
+
+        // Verify position is between left button (X=20, Width=100) and right button (X=320, Width=80) at Y=430
+        Assert.AreEqual(430, form.VersionLabel.Location.Y);
+        Assert.IsGreaterThanOrEqualTo(form.VersionLabel.Location.X, 120);
+        Assert.IsLessThanOrEqualTo(form.VersionLabel.Right, 320);
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_Layout_MaintainsMinimum20PxRightMarginForAllControls()
+    {
+        var settings = new ServerSettings();
+        using var audioMonitor = new WindowsAudioMonitor();
+        using var form = new ServerSettingsForm(settings, audioMonitor, _ => {}, _ => {}, _ => {});
+        _ = form.Handle;
+
+        Assert.AreEqual(420, form.ClientSize.Width);
+
+        foreach (Control control in form.Controls)
+        {
+            if (control.Visible)
+            {
+                Assert.IsLessThanOrEqualTo(
+                    control.Right,
+                    form.ClientSize.Width - 20,
+                    $"Control '{control.Name}' ({control.GetType().Name}) exceeds the 20px right margin constraint. Right={control.Right}, ClientWidth={form.ClientSize.Width}");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_Populate_WithActiveDevice_SelectsDevice()
+    {
+        var fakeMonitor = new FakeAudioMonitor
+        {
+            Devices = new List<AudioDeviceInfo>
+            {
+                new("dev-1", "Microphone 1", true),
+                new("dev-2", "Microphone 2", false)
+            }
+        };
+
+        using var cbo = new ComboBox();
+        MicComboItem? changedItem = null;
+        var controller = new MicrophoneSelectionController(cbo, fakeMonitor, item => changedItem = item);
+
+        controller.Populate("dev-2", "Microphone 2");
+
+        Assert.AreEqual(2, cbo.Items.Count);
+        Assert.IsNotNull(controller.SelectedItem);
+        Assert.AreEqual("dev-2", controller.SelectedId);
+        Assert.IsFalse(controller.SelectedItem.IsMissing);
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_Populate_WithMissingDevice_InsertsMissingItemFirst()
+    {
+        var fakeMonitor = new FakeAudioMonitor
+        {
+            Devices = new List<AudioDeviceInfo>
+            {
+                new("dev-1", "Microphone 1", true)
+            }
+        };
+
+        using var cbo = new ComboBox();
+        MicComboItem? changedItem = null;
+        var controller = new MicrophoneSelectionController(cbo, fakeMonitor, item => changedItem = item);
+
+        controller.Populate("dev-lost", "Lost Microphone");
+
+        Assert.AreEqual(2, cbo.Items.Count);
+        Assert.IsNotNull(controller.SelectedItem);
+        Assert.AreEqual("dev-lost", controller.SelectedId);
+        Assert.IsTrue(controller.SelectedItem.IsMissing);
+        Assert.AreEqual("Lost Microphone", controller.SelectedItem.DisplayName);
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_Populate_NoSavedDevice_SelectsFirstAndTriggersCallback()
+    {
+        var fakeMonitor = new FakeAudioMonitor
+        {
+            Devices = new List<AudioDeviceInfo>
+            {
+                new("dev-1", "Microphone 1", true),
+                new("dev-2", "Microphone 2", false)
+            }
+        };
+
+        using var cbo = new ComboBox();
+        MicComboItem? changedItem = null;
+        var controller = new MicrophoneSelectionController(cbo, fakeMonitor, item => changedItem = item);
+
+        controller.Populate(null, null);
+
+        Assert.AreEqual(2, cbo.Items.Count);
+        Assert.IsNotNull(controller.SelectedItem);
+        Assert.AreEqual("dev-1", controller.SelectedId);
+        Assert.IsNotNull(changedItem);
+        Assert.AreEqual("dev-1", changedItem.Id);
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_Populate_SortsActiveDevicesAlphabetically()
+    {
+        var fakeMonitor = new FakeAudioMonitor
+        {
+            Devices = new List<AudioDeviceInfo>
+            {
+                new("dev-z", "Zebra Mic", false),
+                new("dev-a", "Alpha Mic", false),
+                new("dev-m", "Middle Mic", false)
+            }
+        };
+
+        using var cbo = new ComboBox();
+        var controller = new MicrophoneSelectionController(cbo, fakeMonitor);
+
+        controller.Populate(null, null);
+
+        Assert.AreEqual(3, cbo.Items.Count);
+        Assert.AreEqual("Alpha Mic", ((MicComboItem)cbo.Items[0]).DisplayName);
+        Assert.AreEqual("Middle Mic", ((MicComboItem)cbo.Items[1]).DisplayName);
+        Assert.AreEqual("Zebra Mic", ((MicComboItem)cbo.Items[2]).DisplayName);
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_Populate_WithMissingDevice_PutsMissingFirstAndSortsActiveAlphabetically()
+    {
+        var fakeMonitor = new FakeAudioMonitor
+        {
+            Devices = new List<AudioDeviceInfo>
+            {
+                new("dev-z", "Zebra Mic", false),
+                new("dev-a", "Alpha Mic", false)
+            }
+        };
+
+        using var cbo = new ComboBox();
+        var controller = new MicrophoneSelectionController(cbo, fakeMonitor);
+
+        controller.Populate("dev-missing", "Missing Mic");
+
+        Assert.AreEqual(3, cbo.Items.Count);
+        Assert.AreEqual("Missing Mic", ((MicComboItem)cbo.Items[0]).DisplayName);
+        Assert.IsTrue(((MicComboItem)cbo.Items[0]).IsMissing);
+        Assert.AreEqual("Alpha Mic", ((MicComboItem)cbo.Items[1]).DisplayName);
+        Assert.IsFalse(((MicComboItem)cbo.Items[1]).IsMissing);
+        Assert.AreEqual("Zebra Mic", ((MicComboItem)cbo.Items[2]).DisplayName);
+        Assert.IsFalse(((MicComboItem)cbo.Items[2]).IsMissing);
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_Populate_DistinctDefaultRoles_BadgesConsoleAndCommsSeparately()
+    {
+        var fakeMonitor = new FakeAudioMonitor
+        {
+            Devices = new List<AudioDeviceInfo>
+            {
+                new("dev-console", "Microphone (Realtek)", IsDefault: true, IsDefaultConsole: true, IsDefaultCommunications: false),
+                new("dev-comms", "Wave Cast", IsDefault: false, IsDefaultConsole: false, IsDefaultCommunications: true),
+                new("dev-aux", "Line In", IsDefault: false, IsDefaultConsole: false, IsDefaultCommunications: false)
+            }
+        };
+
+        using var cbo = new ComboBox();
+        var controller = new MicrophoneSelectionController(cbo, fakeMonitor);
+
+        controller.Populate(null, null);
+
+        Assert.AreEqual(3, cbo.Items.Count);
+        var item0 = (MicComboItem?)cbo.Items[0];
+        var item1 = (MicComboItem?)cbo.Items[1];
+        var item2 = (MicComboItem?)cbo.Items[2];
+        Assert.IsNotNull(item0);
+        Assert.IsNotNull(item1);
+        Assert.IsNotNull(item2);
+
+        Assert.AreEqual("dev-aux", item0.Id);
+        Assert.AreEqual("Line In", item0.DisplayName);
+
+        Assert.AreEqual("dev-console", item1.Id);
+        Assert.AreEqual("Microphone (Realtek) (Default)", item1.DisplayName);
+
+        Assert.AreEqual("dev-comms", item2.Id);
+        Assert.AreEqual("Wave Cast (Default Communications)", item2.DisplayName);
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_Populate_SameDeviceBothRoles_BadgesOnlyDefault()
+    {
+        var fakeMonitor = new FakeAudioMonitor
+        {
+            Devices = new List<AudioDeviceInfo>
+            {
+                new("dev-primary", "HyperX QuadCast", IsDefault: true, IsDefaultConsole: true, IsDefaultCommunications: true),
+                new("dev-secondary", "Aux Mic", IsDefault: false, IsDefaultConsole: false, IsDefaultCommunications: false)
+            }
+        };
+
+        using var cbo = new ComboBox();
+        var controller = new MicrophoneSelectionController(cbo, fakeMonitor);
+
+        controller.Populate(null, null);
+
+        Assert.AreEqual(2, cbo.Items.Count);
+        var item0 = (MicComboItem?)cbo.Items[0];
+        var item1 = (MicComboItem?)cbo.Items[1];
+        Assert.IsNotNull(item0);
+        Assert.IsNotNull(item1);
+
+        Assert.AreEqual("dev-secondary", item0.Id);
+        Assert.AreEqual("Aux Mic", item0.DisplayName);
+
+        Assert.AreEqual("dev-primary", item1.Id);
+        Assert.AreEqual("HyperX QuadCast (Default)", item1.DisplayName);
+    }
+
+    [TestMethod]
+    public void MicrophoneSelectionController_GetDeviceBadge_ReturnsExpectedBadges()
+    {
+        // Console default
+        var consoleDev = new AudioDeviceInfo("c", "Console", IsDefault: true, IsDefaultConsole: true, IsDefaultCommunications: false);
+        Assert.AreEqual(" (Default)", MicrophoneSelectionController.GetDeviceBadge(consoleDev));
+
+        // Both roles
+        var bothDev = new AudioDeviceInfo("b", "Both", IsDefault: true, IsDefaultConsole: true, IsDefaultCommunications: true);
+        Assert.AreEqual(" (Default)", MicrophoneSelectionController.GetDeviceBadge(bothDev));
+
+        // Comms default distinct
+        var commsDev = new AudioDeviceInfo("cm", "Comms", IsDefault: false, IsDefaultConsole: false, IsDefaultCommunications: true);
+        Assert.AreEqual(" (Default Communications)", MicrophoneSelectionController.GetDeviceBadge(commsDev));
+
+        // Neither
+        var plainDev = new AudioDeviceInfo("p", "Plain", IsDefault: false, IsDefaultConsole: false, IsDefaultCommunications: false);
+        Assert.AreEqual("", MicrophoneSelectionController.GetDeviceBadge(plainDev));
+
+        // Legacy IsDefault=true
+        var legacyDev = new AudioDeviceInfo("l", "Legacy", IsDefault: true, IsDefaultConsole: false, IsDefaultCommunications: false);
+        Assert.AreEqual(" (Default)", MicrophoneSelectionController.GetDeviceBadge(legacyDev));
+    }
+
+    [TestMethod]
+    public void ServerTrayApplicationContext_ContextMenu_ContainsDonateBelowSettingsAndAheadOfExit()
+    {
+        var tempFolder = TestDirectory.Create("ServerDonateTest");
+
+        try
+        {
+            var settings = new ServerSettings { Port = 13991, IsPaused = true };
+            var fakeAudio = new FakeAudioMonitor();
+            using var broadcaster = new UdpBroadcaster(13991);
+            using var context = new ServerTrayApplicationContext(settings, fakeAudio, broadcaster);
+
+            var menu = context.ContextMenu;
+            Assert.IsNotNull(menu);
+
+            // Context menu structure:
+            // 0: Pause/Resume
+            // 1: Separator
+            // 2: Settings...
+            // 3: Donate
+            // 4: Separator
+            // 5: Exit
+            Assert.IsTrue(menu.Items.Count >= 6, $"Expected at least 6 menu items, found {menu.Items.Count}");
+
+            int settingsIndex = -1;
+            int donateIndex = -1;
+            int exitIndex = -1;
+
+            for (int i = 0; i < menu.Items.Count; i++)
+            {
+                var item = menu.Items[i];
+                if (item.Text != null && item.Text.StartsWith("Settings", StringComparison.OrdinalIgnoreCase))
+                {
+                    settingsIndex = i;
+                }
+                else if (string.Equals(item.Text, "Donate", StringComparison.OrdinalIgnoreCase))
+                {
+                    donateIndex = i;
+                }
+                else if (string.Equals(item.Text, "Exit", StringComparison.OrdinalIgnoreCase))
+                {
+                    exitIndex = i;
+                }
+            }
+
+            Assert.AreNotEqual(-1, settingsIndex, "Settings menu item not found");
+            Assert.AreNotEqual(-1, donateIndex, "Donate menu item not found");
+            Assert.AreNotEqual(-1, exitIndex, "Exit menu item not found");
+
+            Assert.AreEqual(settingsIndex + 1, donateIndex, "Donate must be positioned immediately below Settings...");
+            Assert.IsTrue(donateIndex < exitIndex, "Donate must be positioned ahead of Exit");
+            Assert.IsNotNull(context.MenuDonate);
+            Assert.AreEqual("Donate", context.MenuDonate.Text);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void TrayAlertCycler_CyclesActiveAlertsAndFormatsMultilineTooltip()
+    {
+        var cycler = new TrayAlertCycler();
+        cycler.SetState(AlertFlags.ObsDisconnected | AlertFlags.MicMuted, isPaused: false);
+
+        var activeList = AlertDisplayInfo.GetActiveAlertList(AlertFlags.ObsDisconnected | AlertFlags.MicMuted);
+        Assert.AreEqual(2, activeList.Count);
+
+        string tooltip = AlertDisplayInfo.FormatTooltip(AlertFlags.ObsDisconnected | AlertFlags.MicMuted, isPaused: false);
+        StringAssert.Contains(tooltip, "OBS is not running");
+        StringAssert.Contains(tooltip, "Microphone muted");
+    }
+
+    [TestMethod]
+    public void ServerTrayApplicationContext_ParameterlessConstructor_InstantiatesSuccessfully()
+    {
+        using var context = new ServerTrayApplicationContext();
+        Assert.IsNotNull(context);
+    }
+
+    private sealed class FakeAudioMonitor : IAudioMonitor
+    {
+        public List<AudioDeviceInfo> Devices { get; set; } = new();
+        public IReadOnlyList<AudioDeviceInfo> GetActiveCaptureDevices() => Devices;
+        public IReadOnlyList<AudioDeviceInfo> GetActiveRenderDevices() => Devices;
+        public AudioDeviceInfo? GetDefaultCaptureDevice() => Devices.FirstOrDefault(d => d.IsDefault);
+        public void StartMonitoring(string? targetDeviceId, int retryTimeoutSeconds = 5) { }
+        public void StopMonitoring() { }
+        public bool IsMuted => false;
+        public bool IsConnected => true;
+        public string? CurrentDeviceId => null;
+        public string? CurrentDeviceName => null;
+#pragma warning disable CS0067
+        public event Action<bool>? MuteChanged;
+        public event Action<bool>? ConnectionChanged;
+        public event Action? DevicesChanged;
+#pragma warning restore CS0067
+        public void Dispose() { }
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_WhenObsConnects_UpdatesCaptureDevicesDropdown()
+    {
+        var settings = new ServerSettings { ObsAudioDevice = "Game Audio" };
+        var fakeAudio = new FakeAudioMonitor();
+        var fakeObs = new FakeObsMonitor();
+        fakeObs.IsConnected = false;
+        fakeObs.AvailableInputs = new List<string>();
+
+        using var form = new ServerSettingsForm(
+            settings,
+            fakeAudio,
+            _ => {},
+            _ => {},
+            _ => {},
+            obsMonitor: fakeObs);
+
+        _ = form.Handle;
+
+        var cbo = form.ObsAudioComboBox;
+        Assert.AreEqual(1, cbo.Items.Count);
+        var item0 = (MicComboItem)cbo.Items[0];
+        Assert.AreEqual("Game Audio", item0.DisplayName);
+        Assert.IsTrue(item0.IsMissing);
+
+        // Now OBS connects and provides inputs
+        fakeObs.IsConnected = true;
+        fakeObs.AvailableInputs = new List<string> { "Desktop Audio", "Game Audio", "Mic/Aux" };
+        fakeObs.RaiseConnected();
+
+        Assert.AreEqual(3, cbo.Items.Count);
+        var selectedItem = (MicComboItem)cbo.SelectedItem!;
+        Assert.AreEqual("Game Audio", selectedItem.DisplayName);
+        Assert.IsFalse(selectedItem.IsMissing);
+    }
+
+    private sealed class FakeObsMonitor : IObsMonitor
+    {
+        public bool IsConnected { get; set; }
+        public bool IsStreaming => false;
+        public bool IsRecording => false;
+        public bool IsReconnecting => false;
+        public bool HasNetworkIssue => false;
+        public bool HasRenderIssue => false;
+        public bool IsCaptureDeviceDisconnected => !AvailableInputs.Contains("Game Audio");
+        public bool IsCaptureDeviceMuted => false;
+        public List<string> AvailableInputs { get; set; } = new();
+        public IReadOnlyList<string> AvailableAudioInputs => AvailableInputs;
+        public ObsConnectionState ConnectionState => IsConnected ? ObsConnectionState.Connected : ObsConnectionState.Disconnected;
+
+#pragma warning disable CS0067
+        public event Action<bool>? ConnectionChanged;
+        public event Action? StateChanged;
+        public event Action<ObsAudioMeterEventArgs>? AudioMeterReceived;
+        public event Action<IReadOnlyList<string>>? AudioInputsChanged;
+        public event Action<ObsConnectionState>? ConnectionStateChanged;
+        public event Action? StatusUpdated;
+        public event Action<double, double>? AudioMeterUpdated;
+#pragma warning restore CS0067
+
+        public void Start() { }
+        public void Stop() { }
+        public void UpdateConfig(string host, int port, string? password, int retryTimeoutSeconds, int skippedFramesThreshold, string? audioDeviceName) { }
+        public void ConnectAsync(string host, int port, string? password) { }
+        public void DisconnectAsync() { }
+        public void SetAudioInputName(string? name) { }
+        public void SetSkippedFramesThreshold(int threshold) { }
+        public void Dispose() { }
+
+        public void RaiseConnected()
+        {
+            ConnectionChanged?.Invoke(true);
+            ConnectionStateChanged?.Invoke(ObsConnectionState.Connected);
+            AudioInputsChanged?.Invoke(AvailableInputs.ToArray());
+            StateChanged?.Invoke();
+        }
+    }
+}
+
