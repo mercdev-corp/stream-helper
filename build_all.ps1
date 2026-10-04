@@ -4,12 +4,13 @@ param(
     [string[]]$Platforms = @("win-x64"),
     [string]$Configuration = "Release",
     [string]$OutputDir = "./bin",
-    [string]$Version = ""
+    [string]$Version = "",
+    [switch]$SkipTests = $false
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Mic Helper Build Pipeline ===" -ForegroundColor Cyan
+Write-Host "=== Stream Helper Build Pipeline ===" -ForegroundColor Cyan
 
 # Locate dotnet with SDK
 $dotnet = "dotnet"
@@ -33,6 +34,12 @@ if (-not $hasSdk) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
+# Clean any stale temporary directory if present
+$staleTmp = Join-Path $scriptDir ".tmp"
+if (Test-Path $staleTmp) {
+    try { [System.IO.Directory]::Delete($staleTmp, $true) } catch {}
+}
+
 # Ensure workspace-safe environment variables
 if (-not $env:DOTNET_CLI_HOME) {
     $env:DOTNET_CLI_HOME = Join-Path $scriptDir ".dotnet_home"
@@ -41,8 +48,14 @@ if (-not $env:APPDATA) {
     $env:APPDATA = Join-Path $env:DOTNET_CLI_HOME "appdata"
 }
 if (-not $env:NUGET_PACKAGES) {
-    $env:NUGET_PACKAGES = Join-Path $env:DOTNET_CLI_HOME ".nuget\packages"
+    $userPackages = Join-Path $env:USERPROFILE ".nuget\packages"
+    if (Test-Path $userPackages) {
+        $env:NUGET_PACKAGES = $userPackages
+    } else {
+        $env:NUGET_PACKAGES = Join-Path $env:DOTNET_CLI_HOME ".nuget\packages"
+    }
 }
+
 
 if (-not $Version) {
     if ($env:APP_VERSION) {
@@ -66,19 +79,75 @@ if (-not (Test-Path $absOutputDir)) {
 }
 
 Write-Host "Restoring solution dependencies..." -ForegroundColor Cyan
-& $dotnet restore MicHelper.sln -m:1
+& $dotnet restore StreamHelper.sln -m:1
 if ($LASTEXITCODE -ne 0) {
     throw "Restore failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "Running tests..." -ForegroundColor Cyan
-& $dotnet test tests/MicHelper.Tests/MicHelper.Tests.csproj -c $Configuration --no-restore -m:1
-if ($LASTEXITCODE -ne 0) {
-    throw "Tests failed with exit code $LASTEXITCODE"
+# Disable telemetry prompts during automated builds
+$env:TESTINGPLATFORM_TELEMETRY_OPTOUT = "1"
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+
+if (-not $SkipTests) {
+    Write-Host "Running tests (x64)..." -ForegroundColor Cyan
+    $testProj = Join-Path $scriptDir "tests/StreamHelper.Tests/StreamHelper.Tests.csproj"
+    
+    Write-Host "Building test project..." -ForegroundColor Cyan
+    & $dotnet build $testProj -c $Configuration --no-restore -m:1 -p:BuildInParallel=false
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to build tests with exit code $LASTEXITCODE"
+    }
+
+    $testDll = Join-Path $scriptDir "tests/StreamHelper.Tests/bin/$Configuration/net10.0-windows/StreamHelper.Tests.dll"
+    if (-not (Test-Path $testDll)) {
+        $testDll = Get-ChildItem -Path (Join-Path $scriptDir "tests/StreamHelper.Tests/bin/$Configuration") -Filter "StreamHelper.Tests.dll" -Recurse |
+            Where-Object { $_.FullName -notlike "*TestResults*" } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+
+    $resultsDir = Join-Path $scriptDir "TestResults"
+    if (-not (Test-Path $resultsDir)) {
+        New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
+    }
+
+    $testTmp = Join-Path $scriptDir "tests/StreamHelper.Tests/bin/$Configuration/net10.0-windows/.test_tmp"
+    if (-not (Test-Path $testTmp)) {
+        New-Item -ItemType Directory -Path $testTmp -Force | Out-Null
+    }
+    $env:STREAMHELPER_TEST_TEMP = $testTmp
+
+    $runSettingsPath = Join-Path $scriptDir ".runsettings"
+    $testArgs = @("--results-directory", $resultsDir)
+    if (Test-Path $runSettingsPath) {
+        $testArgs += @("--settings", $runSettingsPath)
+    }
+
+    # Safely clean legacy bin TestResults if present from older test runs
+    $legacyResults = Join-Path $scriptDir "tests/StreamHelper.Tests/bin/$Configuration/net10.0-windows/TestResults"
+    if (Test-Path $legacyResults) {
+        try {
+            [System.IO.Directory]::Delete($legacyResults, $true)
+        } catch {
+            # Silently ignore if locked or pending deletion
+        }
+    }
+
+    Write-Host "Executing tests via native MSTest runner..." -ForegroundColor Cyan
+    if ($testDll -and (Test-Path $testDll)) {
+        & $dotnet $testDll @testArgs
+    } else {
+        & $dotnet run --project $testProj -c $Configuration --no-build -- @testArgs
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tests failed with exit code $LASTEXITCODE"
+    }
+} else {
+    Write-Host "Skipping tests (-SkipTests specified)..." -ForegroundColor Yellow
 }
 
-$serverProj = Join-Path $scriptDir "src/MicHelper.Server/MicHelper.Server.csproj"
-$clientProj = Join-Path $scriptDir "src/MicHelper.Client/MicHelper.Client.csproj"
+$serverProj = Join-Path $scriptDir "src/StreamHelper.Server/StreamHelper.Server.csproj"
+$clientProj = Join-Path $scriptDir "src/StreamHelper.Client/StreamHelper.Client.csproj"
 
 foreach ($rid in $Platforms) {
     Write-Host "Publishing Server and Client for $rid ($Configuration)..." -ForegroundColor Cyan
@@ -103,6 +172,11 @@ foreach ($rid in $Platforms) {
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to publish Client for $rid"
     }
+}
+
+Write-Host "Unblocking built executables..." -ForegroundColor Cyan
+Get-ChildItem -Path $absOutputDir -Filter "*.exe" -Recurse | ForEach-Object {
+    Unblock-File $_.FullName -ErrorAction SilentlyContinue
 }
 
 Write-Host "=== Build Complete ===" -ForegroundColor Green

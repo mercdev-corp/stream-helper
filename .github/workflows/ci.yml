@@ -27,6 +27,9 @@ jobs:
   test:
     name: Run Unit Tests
     runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+      TESTINGPLATFORM_TELEMETRY_OPTOUT: 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,7 +40,10 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Restore solution dependencies
-        run: dotnet restore MicHelper.sln -m:1
+        run: dotnet restore StreamHelper.sln -m:1
+
+      - name: Build solution
+        run: dotnet build StreamHelper.sln -c Release --no-restore -m:1
 
       - name: Run unit tests
-        run: dotnet test tests/MicHelper.Tests/MicHelper.Tests.csproj -c Release --no-restore -m:1
+        run: dotnet run --project tests/StreamHelper.Tests/StreamHelper.Tests.csproj -c Release --no-build -- --settings .runsettings

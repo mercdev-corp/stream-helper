@@ -9,10 +9,13 @@
     <FileVersion>$(AppRawVersion)</FileVersion>
     <InformationalVersion>$(AppRawVersion)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Product>Stream Helper</Product>
+    <Company>Stream Helper</Company>
     <Authors>Vadim Lopatiuk</Authors>
     <Copyright>Copyright (c) 2026 Vadim Lopatiuk</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <NuGetAudit>false</NuGetAudit>
     <NoWarn>$(NoWarn);NU1900</NoWarn>
+    <ApplicationIcon Condition="Exists('$(MSBuildThisFileDirectory)assets\app.ico')">$(MSBuildThisFileDirectory)assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 </Project>
