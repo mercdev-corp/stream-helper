@@ -16,6 +16,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build & Publish Release
@@ -47,6 +51,12 @@ jobs:
               $tag = $refName
               $rawVer = $tag.TrimStart('v')
           } else {
+              $headTags = (git tag --points-at HEAD -l "v*")
+              if ($headTags) {
+                  Write-Host "HEAD already has release tag(s): $($headTags -join ', '). Skipping release creation." -ForegroundColor Yellow
+                  "skip=true" >> $env:GITHUB_OUTPUT
+                  exit 0
+              }
               $latestTag = (git tag -l "v*" --sort=-v:refname | Select-Object -First 1)
               if (-not $latestTag) {
                   $latestTag = "v0.1.0"
