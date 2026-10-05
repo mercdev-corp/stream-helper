@@ -22,6 +22,7 @@ public sealed class ServerSettingsForm : Form
     private readonly Action<string, int, string>? _onObsConfigChanged;
     private readonly Action<string?>? _onObsAudioDeviceChanged;
     private readonly Action<int>? _onSkippedFramesThresholdChanged;
+    private readonly Action<double, bool>? _onAudioDetectionConfigChanged;
 
     private CheckBox _chkStartup = null!;
     private CheckBox _chkDebugLogging = null!;
@@ -32,6 +33,10 @@ public sealed class ServerSettingsForm : Form
     private CheckBox _chkShowPassword = null!;
     private NumericUpDown _numSkippedFrames = null!;
     private ComboBox _cboObsAudio = null!;
+    private CheckBox _chkSimpleAudioDetection = null!;
+    private TrackBar _trkAudioMatchTolerance = null!;
+    private Label _lblAudioMatchToleranceValue = null!;
+    private AudioDetectionSettingsController _audioDetectionController = null!;
     private NumericUpDown _numTimeout = null!;
     private TextBox _txtPort = null!;
     private ToolTip _toolTip = null!;
@@ -44,6 +49,9 @@ public sealed class ServerSettingsForm : Form
     internal Label VersionLabel => _lblVersion;
     internal ComboBox MicrophoneComboBox => _cboMicrophone;
     internal ComboBox ObsAudioComboBox => _cboObsAudio;
+    internal CheckBox SimpleAudioIssueDetectionCheckBox => _chkSimpleAudioDetection;
+    internal TrackBar AudioMatchToleranceTrackBar => _trkAudioMatchTolerance;
+    internal Label AudioMatchToleranceValueLabel => _lblAudioMatchToleranceValue;
     internal TextBox ObsIpTextBox => _txtObsIp;
     internal TextBox ObsPortTextBox => _txtObsPort;
     internal TextBox ObsPasswordTextBox => _txtObsPassword;
@@ -60,7 +68,8 @@ public sealed class ServerSettingsForm : Form
         IObsMonitor? obsMonitor = null,
         Action<string, int, string>? onObsConfigChanged = null,
         Action<string?>? onObsAudioDeviceChanged = null,
-        Action<int>? onSkippedFramesThresholdChanged = null)
+        Action<int>? onSkippedFramesThresholdChanged = null,
+        Action<double, bool>? onAudioDetectionConfigChanged = null)
     {
         _settings = settings;
         _audioMonitor = audioMonitor ?? new WindowsAudioMonitor();
@@ -71,6 +80,7 @@ public sealed class ServerSettingsForm : Form
         _onObsConfigChanged = onObsConfigChanged;
         _onObsAudioDeviceChanged = onObsAudioDeviceChanged;
         _onSkippedFramesThresholdChanged = onSkippedFramesThresholdChanged;
+        _onAudioDetectionConfigChanged = onAudioDetectionConfigChanged;
 
         InitializeComponent();
         LoadSettingsIntoControls();
@@ -127,7 +137,7 @@ public sealed class ServerSettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(420, 480);
+        ClientSize = new Size(420, 505);
         ShowInTaskbar = true;
 
         _toolTip = new ToolTip();
@@ -266,16 +276,47 @@ public sealed class ServerSettingsForm : Form
         _cboObsAudio.DrawItem += CboObsAudio_DrawItem;
         _cboObsAudio.SelectedIndexChanged += CboObsAudio_SelectedIndexChanged;
 
+        _chkSimpleAudioDetection = new CheckBox
+        {
+            Text = "Simple audio issue detection",
+            Location = new Point(20, 288),
+            AutoSize = true
+        };
+
+        var lblAudioTolerance = new Label
+        {
+            Text = "Audio match tolerance:",
+            Location = new Point(20, 314),
+            AutoSize = true
+        };
+
+        _lblAudioMatchToleranceValue = new Label
+        {
+            Location = new Point(220, 314),
+            Width = 60,
+            Text = $"{_settings.AudioMatchToleranceDb} dB"
+        };
+
+        _trkAudioMatchTolerance = new TrackBar
+        {
+            Location = new Point(20, 340),
+            Width = 380,
+            Minimum = 0,
+            Maximum = 40,
+            TickFrequency = 5,
+            Value = Math.Clamp((int)Math.Round(_settings.AudioMatchToleranceDb), 0, 40)
+        };
+
         // Network Section
         var lblPort = new Label
         {
             Text = "Broadcast Port:",
-            Location = new Point(20, 295),
+            Location = new Point(20, 390),
             AutoSize = true
         };
         _txtPort = new TextBox
         {
-            Location = new Point(20, 318),
+            Location = new Point(20, 413),
             Width = 100,
             Text = _settings.Port.ToString()
         };
@@ -284,12 +325,12 @@ public sealed class ServerSettingsForm : Form
         var lblTimeout = new Label
         {
             Text = "Retry timeout (seconds):",
-            Location = new Point(140, 295),
+            Location = new Point(140, 390),
             AutoSize = true
         };
         _numTimeout = new NumericUpDown
         {
-            Location = new Point(140, 318),
+            Location = new Point(140, 413),
             Width = 100,
             Minimum = 1,
             Maximum = 300,
@@ -300,7 +341,7 @@ public sealed class ServerSettingsForm : Form
         _btnOpenLogs = new Button
         {
             Text = "View Logs...",
-            Location = new Point(20, 430),
+            Location = new Point(20, 455),
             Width = 100,
             Height = 30
         };
@@ -309,7 +350,7 @@ public sealed class ServerSettingsForm : Form
         _btnClose = new Button
         {
             Text = "Close",
-            Location = new Point(320, 430),
+            Location = new Point(320, 455),
             Width = 80,
             Height = 30
         };
@@ -318,7 +359,7 @@ public sealed class ServerSettingsForm : Form
         _lblVersion = new Label
         {
             Text = AppVersion.DisplayVersion,
-            Location = new Point(120, 430),
+            Location = new Point(120, 455),
             Size = new Size(200, 30),
             TextAlign = ContentAlignment.MiddleCenter,
             ForeColor = SystemColors.GrayText,
@@ -341,6 +382,10 @@ public sealed class ServerSettingsForm : Form
         Controls.Add(_numSkippedFrames);
         Controls.Add(lblObsAudio);
         Controls.Add(_cboObsAudio);
+        Controls.Add(_chkSimpleAudioDetection);
+        Controls.Add(lblAudioTolerance);
+        Controls.Add(_lblAudioMatchToleranceValue);
+        Controls.Add(_trkAudioMatchTolerance);
         Controls.Add(lblPort);
         Controls.Add(_txtPort);
         Controls.Add(lblTimeout);
@@ -363,6 +408,34 @@ public sealed class ServerSettingsForm : Form
             _txtObsPort.Text = _settings.ObsPort.ToString();
             _txtObsPassword.Text = _settings.ObsPassword;
             _numSkippedFrames.Value = Math.Clamp(_settings.SkippedFramesThreshold, 1, 10000);
+
+            if (_audioDetectionController == null)
+            {
+                _audioDetectionController = new AudioDetectionSettingsController(
+                    _chkSimpleAudioDetection,
+                    _trkAudioMatchTolerance,
+                    _lblAudioMatchToleranceValue,
+                    initialSimpleMode: _settings.SimpleAudioIssueDetection,
+                    initialToleranceDb: _settings.AudioMatchToleranceDb,
+                    saveSimpleMode: simple =>
+                    {
+                        _settings.SimpleAudioIssueDetection = simple;
+                        _settings.Save();
+                    },
+                    saveTolerance: tol =>
+                    {
+                        _settings.AudioMatchToleranceDb = tol;
+                        _settings.Save();
+                    },
+                    onChanged: (tol, simple) =>
+                    {
+                        _onAudioDetectionConfigChanged?.Invoke(tol, simple);
+                    });
+            }
+            else
+            {
+                _audioDetectionController.ApplyState(_settings.SimpleAudioIssueDetection, _settings.AudioMatchToleranceDb);
+            }
 
             _micController.Populate(_settings.MicrophoneId, _settings.MicrophoneName);
             PopulateObsAudioSources();

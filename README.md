@@ -29,9 +29,13 @@ Run `StreamHelper.Server.exe` on the PC running OBS Studio (where your microphon
 
 Run `StreamHelper.Client.exe` on the gaming PC where you want to see HUD indications (and where game audio is playing). Open settings and select your server from the dropdown (change other options if needed). Drag, drop, and resize the overlay as needed.
 
-<img src="client-settings.png" alt="client settings window">
+<img src="client-settings-dual-pc-mode.png" alt="client settings window">
 
 Settings for each component will be saved in the same directory from where the application is executed.
+
+In case of single PC used for play and stream - Client app can be switched to single PC mode and combine all features from both apps.
+
+<img src="client-settings-single-pc-mode.png" alt="client settings window">
 
 ### Windows Defender & SmartScreen Notice ("Windows protected your PC")
 
@@ -136,7 +140,7 @@ Dropdown selector to switch between **Dual PC** and **Single PC** mode.
 - **Dual PC mode:** Connects to a remote server broadcasting on the local network. Disables local OBS and mic monitoring engines to eliminate redundant resource consumption.
 - **Single PC mode:** Runs OBS monitoring, audio correlation, and microphone monitoring directly in-process within the client application. Eliminates the need to run `StreamHelper.Server.exe` on single-PC streaming rigs and handles all telemetry in-memory with zero network overhead.
 
-When switched to **Single PC mode**, the settings dialog dynamically presents the OBS connection settings (IP, port, password), skipped frames threshold, OBS audio capture device selector, and microphone selection dropdown directly within the client settings window.
+When switched to **Single PC mode**, the settings dialog dynamically presents the OBS connection settings (IP, port, password), skipped frames threshold, OBS audio capture device selector, Simple audio issue detection switch, Audio match tolerance slider, and microphone selection dropdown directly within the client settings window.
 
 ##### Run on startup
 
@@ -168,6 +172,20 @@ Number input field to set the threshold of skipped frames (due to rendering lag,
 ##### Game audio capture device selection
 
 Dropdown list of available audio capture devices from OBS Studio. Shows the currently saved device from settings. Updates settings on selection change. If the selected device is currently unavailable in OBS or OBS is not running, it is shown as the first item with red strikethrough text, followed by all available devices. If not changed manually, it remains preserved in settings despite not being found.
+
+##### Simple audio issue detection
+
+Checkbox to toggle simplified game audio verification mode (default: disabled / unchecked).
+- When enabled, Pearson cross-correlation analysis is skipped entirely, and audio monitoring relies exclusively on the conditional silence detector (alerting only when game audio is actively playing on the gaming PC while the OBS capture source remains silent).
+- Disables the **Audio match tolerance** slider and displays it visually at maximum (`40 dB`).
+- When unchecked / disabled, the user's previously configured tolerance value is automatically restored.
+- Changes are applied live to the monitoring engine and persisted immediately to settings.
+
+##### Audio match tolerance
+
+Defaults to `20 dB` (adjustable between `0 dB` and `40 dB` in 5 dB increments).
+
+Slider with a real-time dB label that sets the mean absolute RMS difference allowed between the gaming PC output and OBS capture at the best correlation lag. If Pearson correlation drops below threshold ($r < 0.5$) due to volume level offsets, compression, or downmixing, but the average volume difference remains within this tolerance, false alarms are prevented. A mismatch alert is only raised when correlation is low *and* volume difference exceeds this tolerance.
 
 ##### Retry timeout
 
@@ -225,10 +243,11 @@ In addition to basic audio capture statuses, the server also monitors and compar
   * **Conditional Silence Detector (covers ~95% of real-world failures):**
     * If the Gaming PC detects active audio (`RMS > -45 dBFS`) continuously for 3–5 seconds while the corresponding audio source in OBS remains below the ambient noise threshold (`RMS < -60 dBFS`) or is muted, the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
     * If the game itself is quiet (e.g., loading screens, pause menus, stealth sequences), the condition is not met, preventing false positives.
-  * **Cross-Correlation:**
+  * **Cross-Correlation & Audio Match Tolerance:**
     * To verify that the audio captured by OBS actually matches the game output, maintain a rolling time-series window (e.g., 10 seconds / 100 samples at 100ms resolution).
-    * Calculate Pearson's correlation coefficient between the Gaming PC and OBS RMS series across an expected lag range (e.g., 0 to 500 ms in 100 ms steps).
-    * If the audio on the Gaming PC exhibits significant dynamic variation (high RMS variance) while correlation remains low (r < 0.5), the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
+    * Calculate Pearson's correlation coefficient between the Gaming PC and OBS RMS series across an expected lag range (e.g., 0 to 500 ms in 100 ms steps), and evaluate the mean absolute RMS difference at the best lag.
+    * If the audio on the Gaming PC exhibits significant dynamic variation (high RMS variance) while correlation remains low ($r < 0.5$) **and** the mean absolute difference exceeds the configured **Audio match tolerance** (default `20 dB`, range `0`–`40 dB`), the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
+    * If **Simple audio issue detection** is enabled, Pearson cross-correlation is completely bypassed/reset, and anomaly detection relies solely on the Conditional Silence Detector.
 
 ##### OBS stats monitoring
 

@@ -54,6 +54,58 @@ public sealed class ServerNetworkingAndSettingsTests
     }
 
     [TestMethod]
+    public void ServerSettings_AudioDetection_DefaultsAndRoundtrips()
+    {
+        var tempFolder = TestDirectory.Create("ServerAudioDetectionSettings");
+        try
+        {
+            var def = new ServerSettings();
+            Assert.AreEqual(20.0, def.AudioMatchToleranceDb);
+            Assert.IsFalse(def.SimpleAudioIssueDetection);
+
+            var custom = new ServerSettings
+            {
+                AudioMatchToleranceDb = 12.0,
+                SimpleAudioIssueDetection = true
+            };
+            custom.Save(tempFolder);
+
+            var loaded = ServerSettings.Load(tempFolder);
+            Assert.AreEqual(12.0, loaded.AudioMatchToleranceDb);
+            Assert.IsTrue(loaded.SimpleAudioIssueDetection);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ServerSettings_Load_ClampsAudioMatchToleranceDb()
+    {
+        var tempFolder = TestDirectory.Create("ServerAudioDetectionClamp");
+        try
+        {
+            var filePath = ServerSettings.GetFilePath(tempFolder);
+            Directory.CreateDirectory(tempFolder);
+
+            File.WriteAllText(filePath, "{\"AudioMatchToleranceDb\": -15.5, \"SimpleAudioIssueDetection\": true}");
+            var loadedMin = ServerSettings.Load(tempFolder);
+            Assert.AreEqual(0.0, loadedMin.AudioMatchToleranceDb);
+            Assert.IsTrue(loadedMin.SimpleAudioIssueDetection);
+
+            File.WriteAllText(filePath, "{\"AudioMatchToleranceDb\": 55.0, \"SimpleAudioIssueDetection\": false}");
+            var loadedMax = ServerSettings.Load(tempFolder);
+            Assert.AreEqual(40.0, loadedMax.AudioMatchToleranceDb);
+            Assert.IsFalse(loadedMax.SimpleAudioIssueDetection);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
     public void NetworkUtils_DetectsBoundUdpPort()
     {
         // Bind an ephemeral UDP port
@@ -168,8 +220,8 @@ public sealed class ServerNetworkingAndSettingsTests
         Assert.AreEqual(SystemColors.GrayText, form.VersionLabel.ForeColor);
         Assert.IsTrue(form.Controls.Contains(form.VersionLabel));
 
-        // Verify position is between left button (X=20, Width=100) and right button (X=320, Width=80) at Y=430
-        Assert.AreEqual(430, form.VersionLabel.Location.Y);
+        // Verify position is between left button (X=20, Width=100) and right button (X=320, Width=80) at Y=455
+        Assert.AreEqual(455, form.VersionLabel.Location.Y);
         Assert.IsGreaterThanOrEqualTo(form.VersionLabel.Location.X, 120);
         Assert.IsLessThanOrEqualTo(form.VersionLabel.Right, 320);
     }
@@ -194,6 +246,60 @@ public sealed class ServerNetworkingAndSettingsTests
                     $"Control '{control.Name}' ({control.GetType().Name}) exceeds the 20px right margin constraint. Right={control.Right}, ClientWidth={form.ClientSize.Width}");
             }
         }
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_AudioDetectionControls_PlacementLinkageAndMargin()
+    {
+        var settings = new ServerSettings
+        {
+            AudioMatchToleranceDb = 15.0,
+            SimpleAudioIssueDetection = false
+        };
+        using var audioMonitor = new WindowsAudioMonitor();
+        using var form = new ServerSettingsForm(settings, audioMonitor, _ => {}, _ => {}, _ => {});
+        _ = form.Handle;
+
+        var obsCbo = form.ObsAudioComboBox;
+        var simpleChk = form.SimpleAudioIssueDetectionCheckBox;
+        var toleranceBar = form.AudioMatchToleranceTrackBar;
+        var toleranceLbl = form.AudioMatchToleranceValueLabel;
+
+        Assert.IsNotNull(obsCbo);
+        Assert.IsNotNull(simpleChk);
+        Assert.IsNotNull(toleranceBar);
+        Assert.IsNotNull(toleranceLbl);
+
+        // Control order/placement: Switch and slider below OBS audio dropdown; switch above slider
+        Assert.IsTrue(simpleChk.Top >= obsCbo.Bottom, $"Simple checkbox (top={simpleChk.Top}) should be below OBS audio combo (bottom={obsCbo.Bottom})");
+        Assert.IsTrue(toleranceLbl.Top >= simpleChk.Bottom, $"Tolerance label (top={toleranceLbl.Top}) should be below Simple checkbox (bottom={simpleChk.Bottom})");
+        Assert.IsTrue(toleranceBar.Top >= toleranceLbl.Bottom, $"Tolerance trackbar (top={toleranceBar.Top}) should be below Tolerance label (bottom={toleranceLbl.Bottom})");
+
+        // 20px right margin
+        Assert.IsTrue(simpleChk.Right <= form.ClientSize.Width - 20, $"Simple checkbox right ({simpleChk.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+        Assert.IsTrue(toleranceBar.Right <= form.ClientSize.Width - 20, $"Tolerance bar right ({toleranceBar.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+        Assert.IsTrue(toleranceLbl.Right <= form.ClientSize.Width - 20, $"Tolerance label right ({toleranceLbl.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+
+        // Initial state from settings
+        Assert.IsFalse(simpleChk.Checked);
+        Assert.IsTrue(toleranceBar.Enabled);
+        Assert.AreEqual(15, toleranceBar.Value);
+        Assert.AreEqual("15 dB", toleranceLbl.Text);
+
+        // Enable simple mode: slider disabled and set to 40 dB
+        simpleChk.Checked = true;
+        Assert.IsFalse(toleranceBar.Enabled);
+        Assert.AreEqual(40, toleranceBar.Value);
+        Assert.AreEqual("40 dB", toleranceLbl.Text);
+        Assert.IsTrue(settings.SimpleAudioIssueDetection);
+
+        // Disable simple mode: slider enabled and restored to 15 dB
+        simpleChk.Checked = false;
+        Assert.IsTrue(toleranceBar.Enabled);
+        Assert.AreEqual(15, toleranceBar.Value);
+        Assert.AreEqual("15 dB", toleranceLbl.Text);
+        Assert.IsFalse(settings.SimpleAudioIssueDetection);
+        Assert.AreEqual(15.0, settings.AudioMatchToleranceDb);
     }
 
     [TestMethod]
