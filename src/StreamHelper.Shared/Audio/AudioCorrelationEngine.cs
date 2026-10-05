@@ -17,6 +17,9 @@ public sealed class AudioCorrelationEngine
     private bool _isObsDeviceDisconnected;
     private bool _isObsDeviceMuted;
 
+    private bool _simpleDetection;
+    private double _toleranceDb = 20.0;
+
     private bool _hasSoundIssue;
 
     public bool HasSoundIssue
@@ -41,14 +44,70 @@ public sealed class AudioCorrelationEngine
         }
     }
 
+    public bool SimpleDetection
+    {
+        get { lock (_lock) return _simpleDetection; }
+    }
+
+    public double ToleranceDb
+    {
+        get { lock (_lock) return _toleranceDb; }
+    }
+
     public event Action<bool>? SoundIssueChanged;
 
     public AudioCorrelationEngine(
         ConditionalSilenceDetector? silenceDetector = null,
-        PearsonCorrelationEngine? correlationEngine = null)
+        PearsonCorrelationEngine? correlationEngine = null,
+        double toleranceDb = 20.0,
+        bool simpleMode = false)
     {
         _silenceDetector = silenceDetector ?? new ConditionalSilenceDetector();
-        _correlationEngine = correlationEngine ?? new PearsonCorrelationEngine();
+        _correlationEngine = correlationEngine ?? new PearsonCorrelationEngine(toleranceDb: toleranceDb);
+        _toleranceDb = Math.Clamp(correlationEngine != null && toleranceDb == 20.0 ? correlationEngine.ToleranceDb : toleranceDb, 0, 40);
+        _correlationEngine.ToleranceDb = _toleranceDb;
+        _simpleDetection = simpleMode;
+    }
+
+    public void Configure(double toleranceDb, bool simpleMode)
+    {
+        bool modeChanged = false;
+        bool toleranceChanged = false;
+        double oldTolerance;
+        bool oldMode;
+
+        lock (_lock)
+        {
+            oldTolerance = _toleranceDb;
+            oldMode = _simpleDetection;
+
+            double clampedTolerance = Math.Clamp(toleranceDb, 0, 40);
+            if (Math.Abs(_toleranceDb - clampedTolerance) > 1e-4)
+            {
+                _toleranceDb = clampedTolerance;
+                _correlationEngine.ToleranceDb = clampedTolerance;
+                toleranceChanged = true;
+            }
+
+            if (_simpleDetection != simpleMode)
+            {
+                _simpleDetection = simpleMode;
+                modeChanged = true;
+                _correlationEngine.Reset();
+            }
+        }
+
+        if (toleranceChanged)
+        {
+            AppLogger.Info($"[AudioCorrelation] Tolerance changed from {oldTolerance:F1} dB to {_toleranceDb:F1} dB.");
+        }
+
+        if (modeChanged)
+        {
+            AppLogger.Info($"[AudioCorrelation] SimpleDetection changed from {oldMode} to {simpleMode}.");
+        }
+
+        EvaluateSoundIssue();
     }
 
     public void UpdateSuppressionStates(
@@ -126,7 +185,14 @@ public sealed class AudioCorrelationEngine
         double obsRms = GetCurrentObsRms();
 
         _silenceDetector.ProcessReading(clientRmsDbfs, obsRms);
-        _correlationEngine.AddSamples(clientRmsDbfs, obsRms);
+
+        lock (_lock)
+        {
+            if (!_simpleDetection)
+            {
+                _correlationEngine.AddSamples(clientRmsDbfs, obsRms);
+            }
+        }
 
         EvaluateSoundIssue();
     }
@@ -156,7 +222,10 @@ public sealed class AudioCorrelationEngine
                 double obsRms = ResolveObsRmsAtTime(sampleTimeMs);
 
                 _silenceDetector.ProcessReading(reading, obsRms);
-                _correlationEngine.AddSamples(reading, obsRms);
+                if (!_simpleDetection)
+                {
+                    _correlationEngine.AddSamples(reading, obsRms);
+                }
             }
         }
 
@@ -205,11 +274,13 @@ public sealed class AudioCorrelationEngine
     private void EvaluateSoundIssue()
     {
         bool suppressed;
+        bool simpleMode;
         lock (_lock)
         {
             // Alert Suppression Hierarchy:
             // OBS Device Disconnected -> OBS Device Muted -> Correlation Sound Issue
             suppressed = _isObsDeviceDisconnected || _isObsDeviceMuted;
+            simpleMode = _simpleDetection;
         }
 
         if (suppressed)
@@ -219,7 +290,7 @@ public sealed class AudioCorrelationEngine
         }
 
         bool silenceIssue = _silenceDetector.IsAlertActive;
-        bool correlationIssue = _correlationEngine.IsAlertActive;
+        bool correlationIssue = !simpleMode && _correlationEngine.IsAlertActive;
 
         HasSoundIssue = silenceIssue || correlationIssue;
     }

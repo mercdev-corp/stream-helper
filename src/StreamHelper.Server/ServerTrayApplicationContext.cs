@@ -50,6 +50,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
         _broadcaster = broadcaster ?? new UdpBroadcaster(_settings.Port);
         _audioMonitor = audioMonitor ?? new WindowsAudioMonitor();
         _correlationEngine = correlationEngine ?? new AudioCorrelationEngine();
+        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection);
         _obsMonitor = obsMonitor ?? new ObsMonitor();
         _telemetryReceiver = telemetryReceiver ?? new AudioTelemetryReceiver(_correlationEngine, _settings.Port);
         _trayCycler = new TrayAlertCycler(_syncContext);
@@ -300,6 +301,12 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
                 {
                     AppLogger.Info($"[Server] Skipped frames threshold changed callback triggered: {threshold}%");
                     _obsMonitor.SetSkippedFramesThreshold(threshold);
+                    UpdateAllStates();
+                },
+                onAudioDetectionConfigChanged: (tolerance, simpleMode) =>
+                {
+                    AppLogger.Info($"[Server] Audio detection config changed callback triggered: tolerance={tolerance:F1} dB, simpleMode={simpleMode}");
+                    _correlationEngine.Configure(tolerance, simpleMode);
                     UpdateAllStates();
                 });
 

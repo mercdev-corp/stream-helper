@@ -27,6 +27,8 @@ public sealed class ServerSettings
     public string ObsPassword { get; set; } = string.Empty;
     public int SkippedFramesThreshold { get; set; } = 60;
     public string? ObsAudioDevice { get; set; }
+    public double AudioMatchToleranceDb { get; set; } = 20;
+    public bool SimpleAudioIssueDetection { get; set; }
 
     public static string GetFilePath(string? directory = null)
     {
@@ -47,9 +49,10 @@ public sealed class ServerSettings
                 {
                     if (settings.Port is < 1 or > 65535) settings.Port = ProtocolConstants.DefaultPort;
                     if (settings.RetryTimeout < 1) settings.RetryTimeout = ProtocolConstants.DefaultRetryTimeoutSeconds;
+                    settings.AudioMatchToleranceDb = Math.Clamp(settings.AudioMatchToleranceDb, 0, 40);
                     if (settings.DebugLogging) AppLogger.IsDebugEnabled = true;
                     AppLogger.Info($"[ServerSettings] Loaded server settings from '{path}'.");
-                    AppLogger.Debug($"[ServerSettings] Port={settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}");
+                    AppLogger.Debug($"[ServerSettings] Port={settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}, AudioMatchToleranceDb={settings.AudioMatchToleranceDb}, SimpleAudioIssueDetection={settings.SimpleAudioIssueDetection}");
                     return settings;
                 }
             }
@@ -80,7 +83,7 @@ public sealed class ServerSettings
             var json = JsonSerializer.Serialize(this, ServerSettingsJsonContext.Default.ServerSettings);
             File.WriteAllText(path, json);
             AppLogger.Info($"[ServerSettings] Saved server settings to '{path}'.");
-            AppLogger.Debug($"[ServerSettings] Port={Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}");
+            AppLogger.Debug($"[ServerSettings] Port={Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}, AudioMatchToleranceDb={AudioMatchToleranceDb}, SimpleAudioIssueDetection={SimpleAudioIssueDetection}");
         }
         catch (Exception ex)
         {

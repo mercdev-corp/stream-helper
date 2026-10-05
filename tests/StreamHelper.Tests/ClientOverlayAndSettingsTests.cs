@@ -72,6 +72,58 @@ public sealed class ClientOverlayAndSettingsTests
     }
 
     [TestMethod]
+    public void ClientSettings_AudioDetection_DefaultsAndRoundtrips()
+    {
+        var tempFolder = TestDirectory.Create("ClientAudioDetectionSettings");
+        try
+        {
+            var def = new ClientSettings();
+            Assert.AreEqual(20.0, def.AudioMatchToleranceDb);
+            Assert.IsFalse(def.SimpleAudioIssueDetection);
+
+            var custom = new ClientSettings
+            {
+                AudioMatchToleranceDb = 14.0,
+                SimpleAudioIssueDetection = true
+            };
+            custom.Save(tempFolder);
+
+            var loaded = ClientSettings.Load(tempFolder);
+            Assert.AreEqual(14.0, loaded.AudioMatchToleranceDb);
+            Assert.IsTrue(loaded.SimpleAudioIssueDetection);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ClientSettings_Load_ClampsAudioMatchToleranceDb()
+    {
+        var tempFolder = TestDirectory.Create("ClientAudioDetectionClamp");
+        try
+        {
+            var filePath = ClientSettings.GetFilePath(tempFolder);
+            Directory.CreateDirectory(tempFolder);
+
+            File.WriteAllText(filePath, "{\"AudioMatchToleranceDb\": -20.0, \"SimpleAudioIssueDetection\": true}");
+            var loadedMin = ClientSettings.Load(tempFolder);
+            Assert.AreEqual(0.0, loadedMin.AudioMatchToleranceDb);
+            Assert.IsTrue(loadedMin.SimpleAudioIssueDetection);
+
+            File.WriteAllText(filePath, "{\"AudioMatchToleranceDb\": 60.0, \"SimpleAudioIssueDetection\": false}");
+            var loadedMax = ClientSettings.Load(tempFolder);
+            Assert.AreEqual(40.0, loadedMax.AudioMatchToleranceDb);
+            Assert.IsFalse(loadedMax.SimpleAudioIssueDetection);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
     public void ClientSettings_LegacyJsonWithoutMode_DefaultsToDualPc()
     {
         var tempFolder = TestDirectory.Create("ClientSettingsLegacy");
@@ -622,9 +674,53 @@ public sealed class ClientOverlayAndSettingsTests
             Assert.IsTrue(form.Controls.Contains(form.VersionLabel));
 
             // Verify position is between left button (X=20, Width=100) and right button (X=300, Width=100)
-            Assert.AreEqual(700, form.VersionLabel.Location.Y);
+            Assert.AreEqual(form.CloseButton.Location.Y, form.VersionLabel.Location.Y);
+            Assert.AreEqual(form.OpenLogsButton.Location.Y, form.VersionLabel.Location.Y);
             Assert.IsGreaterThanOrEqualTo(form.VersionLabel.Location.X, 120);
             Assert.IsLessThanOrEqualTo(form.VersionLabel.Right, 300);
+
+            // In Single PC mode, buttons and version label are at Y=841
+            form.ModeComboBox.SelectedIndex = 1;
+            Assert.AreEqual(841, form.VersionLabel.Location.Y);
+            Assert.AreEqual(form.CloseButton.Location.Y, form.VersionLabel.Location.Y);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ClientSettingsForm_DynamicHeight_AdaptsBetweenDualPcAndSinglePc()
+    {
+        var tempFolder = TestDirectory.Create("ClientDynamicHeightTest");
+
+        try
+        {
+            var settings = new ClientSettings { Mode = ClientMode.DualPc };
+            using var assetMgr = new OverlayAssetManager(tempFolder);
+            using var overlay = new OverlayForm(settings, assetMgr);
+            using var listener = new UdpListener(13992);
+            using var form = new StreamHelper.Client.UI.ClientSettingsForm(settings, listener, overlay, _ => { });
+            _ = form.Handle;
+
+            int dualPcHeight = form.ClientSize.Height;
+            Assert.IsTrue(dualPcHeight < 886, $"Dual PC mode height ({dualPcHeight}) should be smaller than Single PC height (886)");
+
+            // Check that gap between timeout control and opacity control is small (~20px), avoiding empty whitespace
+            int gapDualPc = form.OpacityLabel.Top - form.TimeoutNumeric.Bottom;
+            Assert.IsTrue(gapDualPc >= 10 && gapDualPc <= 35, $"Dual PC gap ({gapDualPc}px) should be around 20px, not a large whitespace");
+
+            // Switch to Single PC
+            form.ModeComboBox.SelectedIndex = 1;
+            int singlePcHeight = form.ClientSize.Height;
+            Assert.AreEqual(886, singlePcHeight, "Single PC mode height should be 886");
+            int gapSinglePc = form.OpacityLabel.Top - form.TimeoutNumeric.Bottom;
+            Assert.IsTrue(gapSinglePc >= 10 && gapSinglePc <= 35, $"Single PC gap ({gapSinglePc}px) should be around 20px");
+
+            // Switch back to Dual PC
+            form.ModeComboBox.SelectedIndex = 0;
+            Assert.AreEqual(dualPcHeight, form.ClientSize.Height, "Height should dynamically return to Dual PC height");
         }
         finally
         {
@@ -678,6 +774,81 @@ public sealed class ClientOverlayAndSettingsTests
                         $"Single PC control '{control.Name}' ({control.GetType().Name}) exceeds 20px right margin. Right={control.Right}");
                 }
             }
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ClientSettingsForm_AudioDetectionControls_PlacementLinkageAndMargin_SinglePcMode()
+    {
+        var tempFolder = TestDirectory.Create("ClientAudioDetectionFormTest");
+        try
+        {
+            var settings = new ClientSettings
+            {
+                Mode = ClientMode.SinglePc,
+                AudioMatchToleranceDb = 18.0,
+                SimpleAudioIssueDetection = false
+            };
+            using var listener = new UdpListener(13987);
+            using var assetMgr = new OverlayAssetManager(tempFolder);
+            using var overlay = new OverlayForm(settings, assetMgr);
+            using var audio = new MockAudioMonitor();
+            using var form = new ClientSettingsForm(settings, listener, audio, overlay);
+            _ = form.Handle;
+
+            var obsCbo = form.ObsAudioComboBox;
+            var simpleChk = form.SimpleAudioIssueDetectionCheckBox;
+            var toleranceBar = form.AudioMatchToleranceTrackBar;
+            var toleranceLbl = form.AudioMatchToleranceValueLabel;
+
+            Assert.IsNotNull(obsCbo);
+            Assert.IsNotNull(simpleChk);
+            Assert.IsNotNull(toleranceBar);
+            Assert.IsNotNull(toleranceLbl);
+
+            // Placement inside _pnlSinglePc:
+            // OBS Audio dropdown and label placed after Skipped frames numeric input
+            Assert.IsTrue(form.ObsAudioLabel.Top >= form.SkippedFramesNumeric.Bottom, $"OBS audio label (top={form.ObsAudioLabel.Top}) should be below Skipped frames numeric (bottom={form.SkippedFramesNumeric.Bottom})");
+            Assert.IsTrue(obsCbo.Top >= form.ObsAudioLabel.Bottom, $"OBS audio combo (top={obsCbo.Top}) should be below OBS audio label (bottom={form.ObsAudioLabel.Bottom})");
+            Assert.AreEqual(20, form.ObsAudioLabel.Left);
+            Assert.AreEqual(20, obsCbo.Left);
+            Assert.AreEqual(380, obsCbo.Width);
+
+            // Switch and slider below OBS audio dropdown; switch above slider
+            Assert.IsTrue(simpleChk.Top >= obsCbo.Bottom, $"Simple checkbox (top={simpleChk.Top}) should be below OBS audio combo (bottom={obsCbo.Bottom})");
+            Assert.IsTrue(toleranceLbl.Top >= simpleChk.Bottom, $"Tolerance label (top={toleranceLbl.Top}) should be below Simple checkbox (bottom={simpleChk.Bottom})");
+            Assert.IsTrue(toleranceBar.Top >= toleranceLbl.Bottom, $"Tolerance trackbar (top={toleranceBar.Top}) should be below Tolerance label (bottom={toleranceLbl.Bottom})");
+
+            // 20px right margin within form
+            Assert.IsTrue(obsCbo.Right <= form.ClientSize.Width - 20, $"OBS audio combo right ({obsCbo.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+            Assert.IsTrue(simpleChk.Right <= form.ClientSize.Width - 20, $"Simple checkbox right ({simpleChk.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+            Assert.IsTrue(toleranceBar.Right <= form.ClientSize.Width - 20, $"Tolerance bar right ({toleranceBar.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+            Assert.IsTrue(toleranceLbl.Right <= form.ClientSize.Width - 20, $"Tolerance label right ({toleranceLbl.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+
+            // Initial state from settings
+            Assert.IsFalse(simpleChk.Checked);
+            Assert.IsTrue(toleranceBar.Enabled);
+            Assert.AreEqual(18, toleranceBar.Value);
+            Assert.AreEqual("18 dB", toleranceLbl.Text);
+
+            // Enable simple mode: slider disabled and set to 40 dB
+            simpleChk.Checked = true;
+            Assert.IsFalse(toleranceBar.Enabled);
+            Assert.AreEqual(40, toleranceBar.Value);
+            Assert.AreEqual("40 dB", toleranceLbl.Text);
+            Assert.IsTrue(settings.SimpleAudioIssueDetection);
+
+            // Disable simple mode: slider enabled and restored to 18 dB
+            simpleChk.Checked = false;
+            Assert.IsTrue(toleranceBar.Enabled);
+            Assert.AreEqual(18, toleranceBar.Value);
+            Assert.AreEqual("18 dB", toleranceLbl.Text);
+            Assert.IsFalse(settings.SimpleAudioIssueDetection);
+            Assert.AreEqual(18.0, settings.AudioMatchToleranceDb);
         }
         finally
         {
@@ -907,6 +1078,8 @@ public sealed class ClientOverlayAndSettingsTests
             Assert.IsTrue(form.PortTextBox.Visible);
             Assert.IsFalse(form.MicrophoneComboBox.Visible);
             Assert.AreEqual("Retry timeout (seconds):", form.TimeoutLabel.Text);
+            int dualPcInitialHeight = form.ClientSize.Height;
+            Assert.IsTrue(dualPcInitialHeight < 886, "Dual PC mode height should be smaller than 886");
 
             // Transition to Single PC mode via ComboBox
             form.ModeComboBox.SelectedIndex = 1;
@@ -917,8 +1090,9 @@ public sealed class ClientOverlayAndSettingsTests
             Assert.IsFalse(form.PortTextBox.Visible);
             Assert.IsTrue(form.MicrophoneComboBox.Visible);
             Assert.AreEqual("Microphone reconnect check (seconds):", form.TimeoutLabel.Text);
-            Assert.AreEqual(new Point(20, 340), form.TimeoutLabel.Location);
-            Assert.AreEqual(new Point(20, 362), form.TimeoutNumeric.Location);
+            Assert.AreEqual(new Point(20, 481), form.TimeoutLabel.Location);
+            Assert.AreEqual(new Point(20, 503), form.TimeoutNumeric.Location);
+            Assert.AreEqual(886, form.ClientSize.Height, "Single PC mode height should be 886");
 
             // Transition back to Dual PC mode
             form.ModeComboBox.SelectedIndex = 0;
@@ -930,6 +1104,7 @@ public sealed class ClientOverlayAndSettingsTests
             Assert.AreEqual(20, form.TimeoutLabel.Location.X);
             Assert.IsTrue(form.TimeoutLabel.Location.Y >= 250, "TimeoutLabel must be positioned below Dual PC controls");
             Assert.IsTrue(form.TimeoutNumeric.Location.Y > form.TimeoutLabel.Location.Y, "TimeoutNumeric must be below TimeoutLabel");
+            Assert.AreEqual(dualPcInitialHeight, form.ClientSize.Height, "Height should dynamically return to Dual PC height");
         }
         finally
         {

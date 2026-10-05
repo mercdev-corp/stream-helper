@@ -14,8 +14,8 @@ public sealed class ConditionalSilenceDetector
     public bool IsAlertActive => _isAlertActive;
 
     public ConditionalSilenceDetector(
-        double clientActiveThresholdDbfs = -45.0,
-        double obsSilenceThresholdDbfs = -60.0,
+        double clientActiveThresholdDbfs = -48.0,
+        double obsSilenceThresholdDbfs = -48.0,
         int consecutiveReadingsRequired = 30) // 30 * 100ms = 3.0 seconds
     {
         _clientActiveThresholdDbfs = clientActiveThresholdDbfs;
@@ -27,22 +27,26 @@ public sealed class ConditionalSilenceDetector
     {
         bool wasAlertActive = _isAlertActive;
 
-        // If client audio is quiet, suppress alert and reset counter
+        // If client audio is quiet or in a micro-pause, decay counter gradually.
+        // Alert only clears when counter completely drains to 0.
         if (clientRmsDbfs <= _clientActiveThresholdDbfs)
         {
-            _consecutiveActiveClientSilentObsCount = 0;
-            _isAlertActive = false;
-            if (wasAlertActive)
+            _consecutiveActiveClientSilentObsCount = Math.Max(0, _consecutiveActiveClientSilentObsCount - 1);
+            if (_consecutiveActiveClientSilentObsCount == 0)
             {
-                AppLogger.Info($"[SilenceDetector] Sound capture issue cleared: client audio quiet ({clientRmsDbfs:F1} dBFS <= {_clientActiveThresholdDbfs} dBFS).");
+                _isAlertActive = false;
+                if (wasAlertActive)
+                {
+                    AppLogger.Info($"[SilenceDetector] Sound capture issue cleared: client audio quiet ({clientRmsDbfs:F1} dBFS <= {_clientActiveThresholdDbfs} dBFS).");
+                }
             }
-            return false;
+            return _isAlertActive;
         }
 
-        // Client is active (> -45 dBFS)
+        // Client is active (> clientActiveThresholdDbfs)
         if (obsRmsDbfs < _obsSilenceThresholdDbfs)
         {
-            _consecutiveActiveClientSilentObsCount++;
+            _consecutiveActiveClientSilentObsCount = Math.Min(_consecutiveReadingsRequired, _consecutiveActiveClientSilentObsCount + 1);
             if (_consecutiveActiveClientSilentObsCount >= _consecutiveReadingsRequired)
             {
                 _isAlertActive = true;

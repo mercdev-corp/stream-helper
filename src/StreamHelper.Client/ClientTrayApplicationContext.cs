@@ -58,6 +58,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
         _audioMonitor = audioMonitor ?? new WindowsAudioMonitor();
         _obsMonitor = obsMonitor ?? new ObsMonitor();
         _correlationEngine = correlationEngine ?? new AudioCorrelationEngine();
+        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection);
         _telemetrySender = telemetrySender ?? new ClientAudioTelemetrySender();
         _trayCycler = new TrayAlertCycler(_syncContext);
         _activeMode = _settings.Mode;
@@ -199,6 +200,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
 
         if (_activeMode == ClientMode.SinglePc)
         {
+            _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection);
             _udpListener.Stop();
             _audioMonitor.StartMonitoring(_settings.MicrophoneId, _settings.RetryTimeout);
 
@@ -515,6 +517,15 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
                         {
                             _telemetrySender.Stop();
                         }
+                        UpdateAllStates();
+                    }
+                },
+                onAudioDetectionConfigChanged: (tolerance, simpleMode) =>
+                {
+                    AppLogger.Info($"[Client] Audio detection config changed callback triggered: tolerance={tolerance:F1} dB, simpleMode={simpleMode}");
+                    if (_activeMode == ClientMode.SinglePc)
+                    {
+                        _correlationEngine.Configure(tolerance, simpleMode);
                         UpdateAllStates();
                     }
                 });

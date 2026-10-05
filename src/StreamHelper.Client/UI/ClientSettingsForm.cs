@@ -48,8 +48,14 @@ public sealed class ClientSettingsForm : Form
     private TextBox _txtObsPort = null!;
     private TextBox _txtObsPassword = null!;
     private CheckBox _chkShowPassword = null!;
+    private Label _lblSkipped = null!;
     private NumericUpDown _numSkippedFrames = null!;
+    private Label _lblObsAudio = null!;
     private ComboBox _cboObsAudio = null!;
+    private CheckBox _chkSimpleAudioDetection = null!;
+    private TrackBar _trkAudioMatchTolerance = null!;
+    private Label _lblAudioMatchToleranceVal = null!;
+    private AudioDetectionSettingsController _audioDetectionController = null!;
 
     // Game Audio Controls
     private CheckBox _chkGameAudio = null!;
@@ -58,19 +64,26 @@ public sealed class ClientSettingsForm : Form
     // Shared Controls
     private Label _lblTimeout = null!;
     private NumericUpDown _numTimeout = null!;
+    private Label _lblOpacity = null!;
     private TrackBar _trkOpacity = null!;
     private Label _lblOpacityVal = null!;
+    private Label _lblFrequency = null!;
     private TrackBar _trkFrequency = null!;
     private Label _lblFrequencyVal = null!;
+    private Label _lblAnimationCycles = null!;
     private TrackBar _trkAnimationCycles = null!;
     private Label _lblAnimationCyclesVal = null!;
+    private Label _lblSize = null!;
     private TrackBar _trkSize = null!;
     private Label _lblSizeVal = null!;
+    private Label _lblHint = null!;
     private Button _btnOpenLogs = null!;
     private Button _btnClose = null!;
     private Label _lblVersion = null!;
     private ToolTip _toolTip = null!;
     private bool _isUpdatingControls;
+    private bool _isApplyingLayout;
+    private readonly Action<double, bool>? _onAudioDetectionConfigChanged;
 
     internal Label VersionLabel => _lblVersion;
     internal ComboBox ModeComboBox => _cboMode;
@@ -87,9 +100,19 @@ public sealed class ClientSettingsForm : Form
     internal MicrophoneSelectionController MicController => _micController;
     internal ComboBox GameAudioOutputComboBox => _cboGameAudioOutput;
     internal CheckBox GameAudioCheckBox => _chkGameAudio;
+    internal Label SkippedFramesLabel => _lblSkipped;
+    internal NumericUpDown SkippedFramesNumeric => _numSkippedFrames;
+    internal Label ObsAudioLabel => _lblObsAudio;
     internal ComboBox ObsAudioComboBox => _cboObsAudio;
+    internal CheckBox SimpleAudioIssueDetectionCheckBox => _chkSimpleAudioDetection;
+    internal TrackBar AudioMatchToleranceTrackBar => _trkAudioMatchTolerance;
+    internal Label AudioMatchToleranceValueLabel => _lblAudioMatchToleranceVal;
     internal TrackBar AnimationCyclesTrackBar => _trkAnimationCycles;
     internal Label AnimationCyclesValueLabel => _lblAnimationCyclesVal;
+    internal Label OpacityLabel => _lblOpacity;
+    internal TrackBar OpacityTrackBar => _trkOpacity;
+    internal Button CloseButton => _btnClose;
+    internal Button OpenLogsButton => _btnOpenLogs;
 
     internal sealed record ServerComboItem(string? Ip, string DisplayText, bool IsOffline);
 
@@ -115,7 +138,8 @@ public sealed class ClientSettingsForm : Form
         Action<string, int, string>? onObsConfigChanged = null,
         Action<string?>? onObsAudioDeviceChanged = null,
         Action<int>? onSkippedFramesThresholdChanged = null,
-        Action<bool, string?, string?>? onGameAudioChanged = null)
+        Action<bool, string?, string?>? onGameAudioChanged = null,
+        Action<double, bool>? onAudioDetectionConfigChanged = null)
     {
         _settings = settings;
         _udpListener = udpListener;
@@ -130,6 +154,7 @@ public sealed class ClientSettingsForm : Form
         _onObsAudioDeviceChanged = onObsAudioDeviceChanged;
         _onSkippedFramesThresholdChanged = onSkippedFramesThresholdChanged;
         _onGameAudioChanged = onGameAudioChanged;
+        _onAudioDetectionConfigChanged = onAudioDetectionConfigChanged;
 
         InitializeComponent();
         LoadSettingsIntoControls();
@@ -149,7 +174,7 @@ public sealed class ClientSettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(420, 745);
+        ClientSize = new Size(420, 886);
         ShowInTaskbar = true;
 
         _toolTip = new ToolTip();
@@ -246,7 +271,7 @@ public sealed class ClientSettingsForm : Form
         _pnlSinglePc = new Panel
         {
             Location = new Point(0, 85),
-            Size = new Size(420, 195)
+            Size = new Size(420, 336)
         };
 
         _lblMicrophone = new Label
@@ -294,14 +319,45 @@ public sealed class ClientSettingsForm : Form
         _chkShowPassword = new CheckBox { Text = "Show", Location = new Point(330, 94), AutoSize = true };
         _chkShowPassword.CheckedChanged += (_, _) => _txtObsPassword.UseSystemPasswordChar = !_chkShowPassword.Checked;
 
-        var lblSkipped = new Label { Text = "Skipped frames threshold:", Location = new Point(20, 120), AutoSize = true };
+        _lblSkipped = new Label { Text = "Skipped frames threshold:", Location = new Point(20, 120), AutoSize = true };
         _numSkippedFrames = new NumericUpDown { Location = new Point(20, 140), Width = 90, Minimum = 1, Maximum = 10000, Value = Math.Clamp(_settings.SkippedFramesThreshold, 1, 10000) };
         _numSkippedFrames.ValueChanged += NumSkippedFrames_ValueChanged;
 
-        var lblObsAudio = new Label { Text = "OBS Game Audio Source:", Location = new Point(130, 120), AutoSize = true };
-        _cboObsAudio = new ComboBox { Location = new Point(130, 140), Width = 270, DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 22 };
+        _lblObsAudio = new Label { Text = "OBS Game Audio Source:", Location = new Point(20, 172), AutoSize = true };
+        _cboObsAudio = new ComboBox { Location = new Point(20, 194), Width = 380, DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 22 };
         _cboObsAudio.DrawItem += (s, e) => MicrophoneSelectionController.DrawItem(_cboObsAudio, e);
         _cboObsAudio.SelectedIndexChanged += CboObsAudio_SelectedIndexChanged;
+
+        _chkSimpleAudioDetection = new CheckBox
+        {
+            Text = "Simple audio issue detection",
+            Location = new Point(20, 228),
+            AutoSize = true
+        };
+
+        var lblAudioTolerance = new Label
+        {
+            Text = "Audio match tolerance:",
+            Location = new Point(20, 254),
+            AutoSize = true
+        };
+
+        _lblAudioMatchToleranceVal = new Label
+        {
+            Location = new Point(220, 254),
+            Width = 60,
+            Text = $"{_settings.AudioMatchToleranceDb} dB"
+        };
+
+        _trkAudioMatchTolerance = new TrackBar
+        {
+            Location = new Point(20, 280),
+            Width = 380,
+            Minimum = 0,
+            Maximum = 40,
+            TickFrequency = 5,
+            Value = Math.Clamp((int)Math.Round(_settings.AudioMatchToleranceDb), 0, 40)
+        };
 
         _pnlSinglePc.Controls.Add(_lblMicrophone);
         _pnlSinglePc.Controls.Add(_cboMicrophone);
@@ -313,10 +369,14 @@ public sealed class ClientSettingsForm : Form
         _pnlSinglePc.Controls.Add(lblObsPw);
         _pnlSinglePc.Controls.Add(_txtObsPassword);
         _pnlSinglePc.Controls.Add(_chkShowPassword);
-        _pnlSinglePc.Controls.Add(lblSkipped);
+        _pnlSinglePc.Controls.Add(_lblSkipped);
         _pnlSinglePc.Controls.Add(_numSkippedFrames);
-        _pnlSinglePc.Controls.Add(lblObsAudio);
+        _pnlSinglePc.Controls.Add(_lblObsAudio);
         _pnlSinglePc.Controls.Add(_cboObsAudio);
+        _pnlSinglePc.Controls.Add(_chkSimpleAudioDetection);
+        _pnlSinglePc.Controls.Add(lblAudioTolerance);
+        _pnlSinglePc.Controls.Add(_lblAudioMatchToleranceVal);
+        _pnlSinglePc.Controls.Add(_trkAudioMatchTolerance);
 
         // Game Audio section (visible in both modes)
         _chkGameAudio = new CheckBox
@@ -355,21 +415,21 @@ public sealed class ClientSettingsForm : Form
         };
         _numTimeout.ValueChanged += NumTimeout_ValueChanged;
 
-        var lblOpacity = new Label
+        _lblOpacity = new Label
         {
             Text = "Overlay maximum opacity:",
-            Location = new Point(20, 405),
+            Location = new Point(20, 490),
             AutoSize = true
         };
         _lblOpacityVal = new Label
         {
-            Location = new Point(220, 405),
+            Location = new Point(220, 490),
             Width = 50,
             Text = $"{_settings.Opacity}%"
         };
         _trkOpacity = new TrackBar
         {
-            Location = new Point(20, 425),
+            Location = new Point(20, 510),
             Width = 380,
             Minimum = 0,
             Maximum = 100,
@@ -378,21 +438,21 @@ public sealed class ClientSettingsForm : Form
         };
         _trkOpacity.ValueChanged += TrkOpacity_ValueChanged;
 
-        var lblFreq = new Label
+        _lblFrequency = new Label
         {
             Text = "Pulse frequency (seconds):",
-            Location = new Point(20, 470),
+            Location = new Point(20, 555),
             AutoSize = true
         };
         _lblFrequencyVal = new Label
         {
-            Location = new Point(220, 470),
+            Location = new Point(220, 555),
             Width = 50,
             Text = $"{_settings.PulseFrequency:F1}s"
         };
         _trkFrequency = new TrackBar
         {
-            Location = new Point(20, 490),
+            Location = new Point(20, 575),
             Width = 380,
             Minimum = 1,
             Maximum = 50,
@@ -401,21 +461,21 @@ public sealed class ClientSettingsForm : Form
         };
         _trkFrequency.ValueChanged += TrkFrequency_ValueChanged;
 
-        var lblCycles = new Label
+        _lblAnimationCycles = new Label
         {
             Text = "Animation cycles:",
-            Location = new Point(20, 535),
+            Location = new Point(20, 620),
             AutoSize = true
         };
         _lblAnimationCyclesVal = new Label
         {
-            Location = new Point(220, 535),
+            Location = new Point(220, 620),
             Width = 50,
             Text = $"{_settings.AnimationCycles}"
         };
         _trkAnimationCycles = new TrackBar
         {
-            Location = new Point(20, 555),
+            Location = new Point(20, 640),
             Width = 380,
             Minimum = 1,
             Maximum = 10,
@@ -424,21 +484,21 @@ public sealed class ClientSettingsForm : Form
         };
         _trkAnimationCycles.ValueChanged += TrkAnimationCycles_ValueChanged;
 
-        var lblSize = new Label
+        _lblSize = new Label
         {
             Text = "Overlay size (pixels):",
-            Location = new Point(20, 600),
+            Location = new Point(20, 685),
             AutoSize = true
         };
         _lblSizeVal = new Label
         {
-            Location = new Point(220, 600),
+            Location = new Point(220, 685),
             Width = 60,
             Text = $"{_settings.OverlayWidth}px"
         };
         _trkSize = new TrackBar
         {
-            Location = new Point(20, 620),
+            Location = new Point(20, 705),
             Width = 380,
             Minimum = 32,
             Maximum = 1024,
@@ -447,10 +507,10 @@ public sealed class ClientSettingsForm : Form
         };
         _trkSize.ValueChanged += TrkSize_ValueChanged;
 
-        var lblHint = new Label
+        _lblHint = new Label
         {
             Text = "Drag overlay to move • Scroll mouse wheel or drag corners to resize.",
-            Location = new Point(20, 665),
+            Location = new Point(20, 750),
             MaximumSize = new Size(380, 0),
             ForeColor = Color.Gray,
             AutoSize = true
@@ -459,7 +519,7 @@ public sealed class ClientSettingsForm : Form
         _btnOpenLogs = new Button
         {
             Text = "View Logs...",
-            Location = new Point(20, 700),
+            Location = new Point(20, 785),
             Width = 100,
             Height = 30
         };
@@ -468,7 +528,7 @@ public sealed class ClientSettingsForm : Form
         _btnClose = new Button
         {
             Text = "Close",
-            Location = new Point(300, 700),
+            Location = new Point(300, 785),
             Width = 100,
             Height = 30
         };
@@ -477,7 +537,7 @@ public sealed class ClientSettingsForm : Form
         _lblVersion = new Label
         {
             Text = AppVersion.DisplayVersion,
-            Location = new Point(120, 700),
+            Location = new Point(120, 785),
             Size = new Size(180, 30),
             TextAlign = ContentAlignment.MiddleCenter,
             ForeColor = SystemColors.GrayText,
@@ -494,19 +554,19 @@ public sealed class ClientSettingsForm : Form
         Controls.Add(_cboGameAudioOutput);
         Controls.Add(_lblTimeout);
         Controls.Add(_numTimeout);
-        Controls.Add(lblOpacity);
+        Controls.Add(_lblOpacity);
         Controls.Add(_lblOpacityVal);
         Controls.Add(_trkOpacity);
-        Controls.Add(lblFreq);
+        Controls.Add(_lblFrequency);
         Controls.Add(_lblFrequencyVal);
         Controls.Add(_trkFrequency);
-        Controls.Add(lblCycles);
+        Controls.Add(_lblAnimationCycles);
         Controls.Add(_lblAnimationCyclesVal);
         Controls.Add(_trkAnimationCycles);
-        Controls.Add(lblSize);
+        Controls.Add(_lblSize);
         Controls.Add(_lblSizeVal);
         Controls.Add(_trkSize);
-        Controls.Add(lblHint);
+        Controls.Add(_lblHint);
         Controls.Add(_btnOpenLogs);
         Controls.Add(_lblVersion);
         Controls.Add(_btnClose);
@@ -552,7 +612,7 @@ public sealed class ClientSettingsForm : Form
     protected override void OnLayout(LayoutEventArgs levent)
     {
         base.OnLayout(levent);
-        if (_settings != null && _pnlDualPc != null && _pnlSinglePc != null)
+        if (_settings != null && _pnlDualPc != null && _pnlSinglePc != null && _lblOpacity != null)
         {
             ApplyLayoutForMode(_settings.Mode);
         }
@@ -571,30 +631,68 @@ public sealed class ClientSettingsForm : Form
 
     private void ApplyLayoutForMode(ClientMode mode)
     {
-        bool isSinglePc = mode == ClientMode.SinglePc;
-
-        _pnlDualPc.Visible = !isSinglePc;
-        _pnlSinglePc.Visible = isSinglePc;
-
-        if (!isSinglePc)
+        if (_isApplyingLayout || _lblOpacity == null || _numTimeout == null) return;
+        _isApplyingLayout = true;
+        try
         {
-            LayoutDualPcControls();
+            bool isSinglePc = mode == ClientMode.SinglePc;
+
+            _pnlDualPc.Visible = !isSinglePc;
+            _pnlSinglePc.Visible = isSinglePc;
+
+            if (isSinglePc)
+            {
+                _pnlSinglePc.Height = _trkAudioMatchTolerance.Bottom + 11;
+            }
+            else
+            {
+                LayoutDualPcControls();
+            }
+
+            // Position shared controls below active panel
+            int contentBottom = isSinglePc ? _pnlSinglePc.Bottom + 5 : _pnlDualPc.Bottom + 5;
+            _chkGameAudio.Location = new Point(20, contentBottom);
+            _cboGameAudioOutput.Location = new Point(20, contentBottom + 25);
+            _lblTimeout.Location = new Point(20, contentBottom + 55);
+            _numTimeout.Location = new Point(20, contentBottom + 77);
+
+            if (isSinglePc)
+            {
+                _lblTimeout.Text = "Microphone reconnect check (seconds):";
+            }
+            else
+            {
+                _lblTimeout.Text = "Retry timeout (seconds):";
+            }
+
+            int overlayTop = _numTimeout.Location.Y + 43;
+            _lblOpacity.Location = new Point(20, overlayTop);
+            _lblOpacityVal.Location = new Point(220, overlayTop);
+            _trkOpacity.Location = new Point(20, overlayTop + 20);
+            _lblFrequency.Location = new Point(20, overlayTop + 65);
+            _lblFrequencyVal.Location = new Point(220, overlayTop + 65);
+            _trkFrequency.Location = new Point(20, overlayTop + 85);
+            _lblAnimationCycles.Location = new Point(20, overlayTop + 130);
+            _lblAnimationCyclesVal.Location = new Point(220, overlayTop + 130);
+            _trkAnimationCycles.Location = new Point(20, overlayTop + 150);
+            _lblSize.Location = new Point(20, overlayTop + 195);
+            _lblSizeVal.Location = new Point(220, overlayTop + 195);
+            _trkSize.Location = new Point(20, overlayTop + 215);
+            _lblHint.Location = new Point(20, overlayTop + 260);
+            _btnOpenLogs.Location = new Point(20, overlayTop + 295);
+            _lblVersion.Location = new Point(120, overlayTop + 295);
+            _btnClose.Location = new Point(300, overlayTop + 295);
+
+            int targetHeight = overlayTop + 340;
+            var targetSize = new Size(420, targetHeight);
+            if (ClientSize != targetSize)
+            {
+                ClientSize = targetSize;
+            }
         }
-
-        // Position shared controls below active panel
-        int contentBottom = isSinglePc ? _pnlSinglePc.Bottom + 5 : _pnlDualPc.Bottom + 5;
-        _chkGameAudio.Location = new Point(20, contentBottom);
-        _cboGameAudioOutput.Location = new Point(20, contentBottom + 25);
-        _lblTimeout.Location = new Point(20, contentBottom + 55);
-        _numTimeout.Location = new Point(20, contentBottom + 77);
-
-        if (isSinglePc)
+        finally
         {
-            _lblTimeout.Text = "Microphone reconnect check (seconds):";
-        }
-        else
-        {
-            _lblTimeout.Text = "Retry timeout (seconds):";
+            _isApplyingLayout = false;
         }
     }
 
@@ -616,6 +714,34 @@ public sealed class ClientSettingsForm : Form
             _txtObsPort.Text = _settings.ObsPort.ToString();
             _txtObsPassword.Text = _settings.ObsPassword;
             _numSkippedFrames.Value = Math.Clamp(_settings.SkippedFramesThreshold, 1, 10000);
+
+            if (_audioDetectionController == null)
+            {
+                _audioDetectionController = new AudioDetectionSettingsController(
+                    _chkSimpleAudioDetection,
+                    _trkAudioMatchTolerance,
+                    _lblAudioMatchToleranceVal,
+                    initialSimpleMode: _settings.SimpleAudioIssueDetection,
+                    initialToleranceDb: _settings.AudioMatchToleranceDb,
+                    saveSimpleMode: simple =>
+                    {
+                        _settings.SimpleAudioIssueDetection = simple;
+                        _settings.Save();
+                    },
+                    saveTolerance: tol =>
+                    {
+                        _settings.AudioMatchToleranceDb = tol;
+                        _settings.Save();
+                    },
+                    onChanged: (tol, simple) =>
+                    {
+                        _onAudioDetectionConfigChanged?.Invoke(tol, simple);
+                    });
+            }
+            else
+            {
+                _audioDetectionController.ApplyState(_settings.SimpleAudioIssueDetection, _settings.AudioMatchToleranceDb);
+            }
 
             ApplyLayoutForMode(_settings.Mode);
 
