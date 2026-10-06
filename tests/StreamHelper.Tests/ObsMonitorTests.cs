@@ -67,6 +67,45 @@ public sealed class ObsMonitorTests
     }
 
     [TestMethod]
+    public void RollingFrameCounter_DefaultWindow_IsFiveSeconds()
+    {
+        var counter = new RollingFrameCounter();
+        Assert.AreEqual(TimeSpan.FromSeconds(5), counter.Window);
+    }
+
+    [TestMethod]
+    public void RollingFrameCounter_DynamicWindowConfiguration_PrunesOldSamples()
+    {
+        var counter = new RollingFrameCounter(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(5));
+        var start = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+
+        counter.Update(0, 50, start, true);
+        counter.Update(10, 50, start.AddSeconds(4), true);
+        counter.Update(20, 50, start.AddSeconds(8), true);
+
+        // Window = 10s. At t=8s, cutoff is 8 - 10 = -2. Sample at t=0s is kept. Delta = 20 - 0 = 20.
+        Assert.AreEqual(20, counter.CurrentDelta);
+
+        // Dynamically shrink window to 5s.
+        counter.Window = TimeSpan.FromSeconds(5);
+        Assert.AreEqual(TimeSpan.FromSeconds(5), counter.Window);
+
+        // Next update at t=9s: cutoff is 9 - 5 = 4s.
+        // Sample at t=0s is pruned (< 4s). Sample at t=4s (value 10) is kept.
+        // Current value = 25. Delta = 25 - 10 = 15.
+        counter.Update(25, 50, start.AddSeconds(9), true);
+        Assert.AreEqual(15, counter.CurrentDelta);
+    }
+
+    [TestMethod]
+    public void RollingFrameCounter_SetWindow_ThrowsOnNonPositive()
+    {
+        var counter = new RollingFrameCounter();
+        Assert.Throws<ArgumentOutOfRangeException>(() => counter.SetWindow(TimeSpan.Zero));
+        Assert.Throws<ArgumentOutOfRangeException>(() => counter.SetWindow(TimeSpan.FromSeconds(-1)));
+    }
+
+    [TestMethod]
     public void ObsMonitor_MulToDbfs_CalculatesAccurately()
     {
         Assert.AreEqual(-100.0, ObsMonitor.MulToDbfs(0.0));
@@ -74,6 +113,33 @@ public sealed class ObsMonitorTests
         Assert.AreEqual(0.0, ObsMonitor.MulToDbfs(1.0), 0.001);
         Assert.AreEqual(-6.02, ObsMonitor.MulToDbfs(0.5), 0.01);
         Assert.AreEqual(-20.0, ObsMonitor.MulToDbfs(0.1), 0.01);
+    }
+
+    [TestMethod]
+    public void ObsMonitor_SkippedFramesPeriod_DefaultsAndConfiguration()
+    {
+        using var monitor = new ObsMonitor();
+        Assert.AreEqual(5, monitor.SkippedFramesPeriodSeconds);
+        Assert.IsTrue(monitor.IsAudioSourceInCurrentScene);
+
+        // Update via SetSkippedFramesPeriod
+        monitor.SetSkippedFramesPeriod(15);
+        Assert.AreEqual(15, monitor.SkippedFramesPeriodSeconds);
+
+        // Clamping on SetSkippedFramesPeriod
+        monitor.SetSkippedFramesPeriod(0);
+        Assert.AreEqual(5, monitor.SkippedFramesPeriodSeconds);
+
+        monitor.SetSkippedFramesPeriod(500);
+        Assert.AreEqual(300, monitor.SkippedFramesPeriodSeconds);
+
+        // Update via UpdateConfig
+        monitor.UpdateConfig("127.0.0.1", 4455, null, 5, 50, "Game Audio", 25);
+        Assert.AreEqual(25, monitor.SkippedFramesPeriodSeconds);
+
+        // Constructor with explicit period
+        using var customMonitor = new ObsMonitor(skippedFramesPeriodSeconds: 10);
+        Assert.AreEqual(10, customMonitor.SkippedFramesPeriodSeconds);
     }
 
     [TestMethod]
@@ -278,6 +344,142 @@ public sealed class ObsMonitorTests
         }
         Assert.IsFalse(monitor.IsCaptureDeviceMuted);
     }
+
+    [TestMethod]
+    public async Task ObsMonitor_SpecialAudioInputs_AlwaysReportedAsInScene()
+    {
+        int port = 14583;
+        using var mockServer = new MockObsWebSocketServer(port, null);
+        mockServer.SetInputs(new[]
+        {
+            new { inputName = "Desktop Audio", inputKind = "wasapi_output_capture" }
+        });
+        mockServer.SetSpecialInputs(new { desktop1 = "Desktop Audio" });
+        mockServer.SetCurrentProgramScene("Scene Without Audio");
+        mockServer.SetSceneItems("Scene Without Audio", Array.Empty<object>());
+        mockServer.Start();
+
+        using var monitor = new ObsMonitor("127.0.0.1", port, password: null, retryTimeoutSeconds: 1, audioDeviceName: "Desktop Audio");
+        monitor.Start();
+
+        var connectTimeout = DateTime.UtcNow.AddSeconds(5);
+        while (!monitor.IsConnected && DateTime.UtcNow < connectTimeout)
+        {
+            await Task.Delay(50);
+        }
+        Assert.IsTrue(monitor.IsConnected);
+
+        // Allow poll / check
+        await Task.Delay(200);
+        Assert.IsTrue(monitor.IsAudioSourceInCurrentScene, "Special inputs must always be reported as present in scene");
+    }
+
+    [TestMethod]
+    public async Task ObsMonitor_NormalAudioSource_DetectsPresenceAndRespondsToSceneChange()
+    {
+        int port = 14584;
+        using var mockServer = new MockObsWebSocketServer(port, null);
+        mockServer.SetInputs(new[]
+        {
+            new { inputName = "Game Audio", inputKind = "wasapi_output_capture" }
+        });
+        mockServer.SetSpecialInputs(new { });
+        mockServer.SetCurrentProgramScene("Game Scene");
+        mockServer.SetSceneItems("Game Scene", new object[]
+        {
+            new { sourceName = "Game Audio", isGroup = false, sourceType = "OBS_SOURCE_TYPE_INPUT" }
+        });
+        mockServer.SetSceneItems("BRB Scene", new object[]
+        {
+            new { sourceName = "BRB Text", isGroup = false, sourceType = "OBS_SOURCE_TYPE_INPUT" }
+        });
+        mockServer.Start();
+
+        using var monitor = new ObsMonitor("127.0.0.1", port, password: null, retryTimeoutSeconds: 1, audioDeviceName: "Game Audio");
+        monitor.Start();
+
+        var connectTimeout = DateTime.UtcNow.AddSeconds(5);
+        while (!monitor.IsConnected && DateTime.UtcNow < connectTimeout)
+        {
+            await Task.Delay(50);
+        }
+        Assert.IsTrue(monitor.IsConnected);
+
+        // Wait for presence detection in Game Scene
+        var presenceTimeout = DateTime.UtcNow.AddSeconds(3);
+        while (!monitor.IsAudioSourceInCurrentScene && DateTime.UtcNow < presenceTimeout)
+        {
+            await Task.Delay(50);
+        }
+        Assert.IsTrue(monitor.IsAudioSourceInCurrentScene, "Audio source should be present in Game Scene");
+
+        // Switch scene to BRB Scene
+        await mockServer.BroadcastCurrentProgramSceneChangedAsync("BRB Scene");
+        var sceneChangeTimeout = DateTime.UtcNow.AddSeconds(3);
+        while (monitor.IsAudioSourceInCurrentScene && DateTime.UtcNow < sceneChangeTimeout)
+        {
+            await Task.Delay(50);
+        }
+        Assert.IsFalse(monitor.IsAudioSourceInCurrentScene, "Audio source should not be present in BRB Scene");
+
+        // Switch back to Game Scene
+        await mockServer.BroadcastCurrentProgramSceneChangedAsync("Game Scene");
+        var restoreTimeout = DateTime.UtcNow.AddSeconds(3);
+        while (!monitor.IsAudioSourceInCurrentScene && DateTime.UtcNow < restoreTimeout)
+        {
+            await Task.Delay(50);
+        }
+        Assert.IsTrue(monitor.IsAudioSourceInCurrentScene, "Audio source should be present again after returning to Game Scene");
+    }
+
+    [TestMethod]
+    public async Task ObsMonitor_GroupAndNestedSceneHierarchy_DetectsPresenceAndHandlesCircularReferences()
+    {
+        int port = 14585;
+        using var mockServer = new MockObsWebSocketServer(port, null);
+        mockServer.SetInputs(new[]
+        {
+            new { inputName = "Game Audio", inputKind = "wasapi_output_capture" }
+        });
+        mockServer.SetSpecialInputs(new { });
+        mockServer.SetCurrentProgramScene("Main Scene");
+
+        // Main Scene contains group "Audio Group" and nested scene "Sub Scene"
+        mockServer.SetSceneItems("Main Scene", new object[]
+        {
+            new { sourceName = "Audio Group", isGroup = true, sourceType = "OBS_SOURCE_TYPE_SCENE" },
+            new { sourceName = "Sub Scene", isGroup = false, sourceType = "OBS_SOURCE_TYPE_SCENE" }
+        });
+        // Sub Scene circularly references Main Scene
+        mockServer.SetSceneItems("Sub Scene", new object[]
+        {
+            new { sourceName = "Main Scene", isGroup = false, sourceType = "OBS_SOURCE_TYPE_SCENE" }
+        });
+        // Audio Group contains Game Audio
+        mockServer.SetGroupSceneItems("Audio Group", new object[]
+        {
+            new { sourceName = "Game Audio", isGroup = false, sourceType = "OBS_SOURCE_TYPE_INPUT" }
+        });
+        mockServer.Start();
+
+        using var monitor = new ObsMonitor("127.0.0.1", port, password: null, retryTimeoutSeconds: 1, audioDeviceName: "Game Audio");
+        monitor.Start();
+
+        var connectTimeout = DateTime.UtcNow.AddSeconds(5);
+        while (!monitor.IsConnected && DateTime.UtcNow < connectTimeout)
+        {
+            await Task.Delay(50);
+        }
+        Assert.IsTrue(monitor.IsConnected);
+
+        // Wait for presence detection through group
+        var presenceTimeout = DateTime.UtcNow.AddSeconds(3);
+        while (!monitor.IsAudioSourceInCurrentScene && DateTime.UtcNow < presenceTimeout)
+        {
+            await Task.Delay(50);
+        }
+        Assert.IsTrue(monitor.IsAudioSourceInCurrentScene, "Audio source should be found inside Audio Group despite circular reference between scenes");
+    }
 }
 
 internal sealed class MockObsWebSocketServer : IDisposable
@@ -290,10 +492,16 @@ internal sealed class MockObsWebSocketServer : IDisposable
     private object? _customInputs;
     private object? _customSpecialInputs;
     private bool _inputMuted;
+    private string _currentProgramSceneName = "Scene 1";
+    private readonly Dictionary<string, object> _scenes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, object> _groups = new(StringComparer.OrdinalIgnoreCase);
 
     public void SetInputs(object inputs) => _customInputs = inputs;
     public void SetSpecialInputs(object specialInputs) => _customSpecialInputs = specialInputs;
     public void SetInputMuted(bool muted) => _inputMuted = muted;
+    public void SetCurrentProgramScene(string sceneName) => _currentProgramSceneName = sceneName;
+    public void SetSceneItems(string sceneName, object items) => _scenes[sceneName] = items;
+    public void SetGroupSceneItems(string groupName, object items) => _groups[groupName] = items;
 
     public MockObsWebSocketServer(int port, string? password)
     {
@@ -444,6 +652,24 @@ internal sealed class MockObsWebSocketServer : IDisposable
                     {
                         respData = _customSpecialInputs ?? (object)new { };
                     }
+                    else if (reqType == "GetCurrentProgramScene")
+                    {
+                        respData = new { currentProgramSceneName = _currentProgramSceneName };
+                    }
+                    else if (reqType == "GetSceneItemList")
+                    {
+                        string sceneName = d.TryGetProperty("requestData", out var rd) && rd.TryGetProperty("sceneName", out var sn)
+                            ? sn.GetString() ?? "" : "";
+                        var items = _scenes.TryGetValue(sceneName, out var scItems) ? scItems : Array.Empty<object>();
+                        respData = new { sceneItems = items };
+                    }
+                    else if (reqType == "GetGroupSceneItemList")
+                    {
+                        string groupName = d.TryGetProperty("requestData", out var rd) && rd.TryGetProperty("sceneName", out var gn)
+                            ? gn.GetString() ?? "" : "";
+                        var items = _groups.TryGetValue(groupName, out var grpItems) ? grpItems : Array.Empty<object>();
+                        respData = new { sceneItems = items };
+                    }
 
                     var respMsg = new Dictionary<string, object>
                     {
@@ -505,6 +731,25 @@ internal sealed class MockObsWebSocketServer : IDisposable
                 {
                     inputName = inputName,
                     inputMuted = muted
+                }
+            }
+        };
+
+        await SendMessageAsync(JsonSerializer.Serialize(evtMsg)).ConfigureAwait(false);
+    }
+
+    public async Task BroadcastCurrentProgramSceneChangedAsync(string sceneName)
+    {
+        _currentProgramSceneName = sceneName;
+        var evtMsg = new Dictionary<string, object>
+        {
+            ["op"] = 5,
+            ["d"] = new Dictionary<string, object>
+            {
+                ["eventType"] = "CurrentProgramSceneChanged",
+                ["eventData"] = new
+                {
+                    sceneName = sceneName
                 }
             }
         };

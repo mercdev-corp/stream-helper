@@ -16,6 +16,7 @@ public sealed class AudioCorrelationEngine
 
     private bool _isObsDeviceDisconnected;
     private bool _isObsDeviceMuted;
+    private bool _isNotInActiveScene;
 
     private bool _simpleDetection;
     private double _toleranceDb = 20.0;
@@ -112,22 +113,26 @@ public sealed class AudioCorrelationEngine
 
     public void UpdateSuppressionStates(
         bool obsDeviceDisconnected,
-        bool obsDeviceMuted)
+        bool obsDeviceMuted,
+        bool isNotInActiveScene = false)
     {
         bool changed = false;
         lock (_lock)
         {
-            if (_isObsDeviceDisconnected != obsDeviceDisconnected || _isObsDeviceMuted != obsDeviceMuted)
+            if (_isObsDeviceDisconnected != obsDeviceDisconnected ||
+                _isObsDeviceMuted != obsDeviceMuted ||
+                _isNotInActiveScene != isNotInActiveScene)
             {
                 _isObsDeviceDisconnected = obsDeviceDisconnected;
                 _isObsDeviceMuted = obsDeviceMuted;
+                _isNotInActiveScene = isNotInActiveScene;
                 changed = true;
             }
         }
 
         if (changed)
         {
-            AppLogger.Debug($"[AudioCorrelation] Suppression states updated: obsDisconnected={obsDeviceDisconnected}, obsMuted={obsDeviceMuted}.");
+            AppLogger.Debug($"[AudioCorrelation] Suppression states updated: obsDisconnected={obsDeviceDisconnected}, obsMuted={obsDeviceMuted}, isNotInActiveScene={isNotInActiveScene}.");
         }
 
         EvaluateSoundIssue();
@@ -137,11 +142,12 @@ public sealed class AudioCorrelationEngine
         bool micDisconnected,
         bool micMuted,
         bool obsDeviceDisconnected,
-        bool obsDeviceMuted)
+        bool obsDeviceMuted,
+        bool isNotInActiveScene = false)
     {
         // Mic states belong to the microphone monitor, not the game audio correlation engine.
         // Alert Suppression Hierarchy: OBS capture device disconnected -> OBS capture device muted -> sound issue.
-        UpdateSuppressionStates(obsDeviceDisconnected, obsDeviceMuted);
+        UpdateSuppressionStates(obsDeviceDisconnected, obsDeviceMuted, isNotInActiveScene);
     }
 
     public void IngestObsAudioMeter(double rmsDbfs, double peakDbfs, DateTime timestamp)
@@ -278,8 +284,8 @@ public sealed class AudioCorrelationEngine
         lock (_lock)
         {
             // Alert Suppression Hierarchy:
-            // OBS Device Disconnected -> OBS Device Muted -> Correlation Sound Issue
-            suppressed = _isObsDeviceDisconnected || _isObsDeviceMuted;
+            // OBS Device Disconnected -> OBS Device Muted -> Not In Active Scene -> Correlation Sound Issue
+            suppressed = _isObsDeviceDisconnected || _isObsDeviceMuted || _isNotInActiveScene;
             simpleMode = _simpleDetection;
         }
 
@@ -303,6 +309,7 @@ public sealed class AudioCorrelationEngine
             _lastObsMeterTime = DateTime.MinValue;
             _obsMeterHistory.Clear();
             _hasSoundIssue = false;
+            _isNotInActiveScene = false;
         }
 
         _silenceDetector.Reset();

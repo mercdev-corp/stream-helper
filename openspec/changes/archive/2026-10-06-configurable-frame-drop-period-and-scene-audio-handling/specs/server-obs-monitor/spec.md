@@ -1,21 +1,4 @@
-# server-obs-monitor Specification
-
-## Purpose
-
-Connects to the OBS Studio WebSocket v5 server, monitors stream and recording state, tracks reconnect attempts and dropped frame thresholds, and ingests live audio volume meters.
-
-## Requirements
-
-### Requirement: OBS Studio WebSocket v5 Connection and Reconnection
-The OBS monitor SHALL maintain an authenticated WebSocket connection to OBS Studio v5 using configured host, port, and password parameters, and automatically attempt reconnections on connection failure or drop using the configured retry timeout.
-
-#### Scenario: Successful connection to OBS Studio
-- **WHEN** the server launches or reconnect timer elapses and OBS Studio is running with WebSocket server enabled
-- **THEN** the OBS monitor authenticates, establishes an active session, and clears any `obs disconnected` alerts
-
-#### Scenario: OBS Studio not running or unreachable
-- **WHEN** the WebSocket connection attempt fails or disconnects unexpectedly
-- **THEN** the monitor marks OBS state as disconnected, broadcasts `obs disconnected` with tooltip "OBS is not running", and schedules a reconnect attempt based on the retry timeout
+## MODIFIED Requirements
 
 ### Requirement: Stream and Output Health Monitoring
 The OBS monitor SHALL periodically query `GetStreamStatus` and `GetStats` each second when an output is active, and evaluate reconnection attempts and dropped frame rates against the configured threshold over a user-configured evaluation window (defaulting to 5 seconds, configurable from 1 to 300 seconds).

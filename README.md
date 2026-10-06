@@ -140,7 +140,7 @@ Dropdown selector to switch between **Dual PC** and **Single PC** mode.
 - **Dual PC mode:** Connects to a remote server broadcasting on the local network. Disables local OBS and mic monitoring engines to eliminate redundant resource consumption.
 - **Single PC mode:** Runs OBS monitoring, audio correlation, and microphone monitoring directly in-process within the client application. Eliminates the need to run `StreamHelper.Server.exe` on single-PC streaming rigs and handles all telemetry in-memory with zero network overhead.
 
-When switched to **Single PC mode**, the settings dialog dynamically presents the OBS connection settings (IP, port, password), skipped frames threshold, OBS audio capture device selector, Simple audio issue detection switch, Audio match tolerance slider, and microphone selection dropdown directly within the client settings window.
+When switched to **Single PC mode**, the settings dialog dynamically presents the OBS connection settings (IP, port, password), skipped frames threshold, evaluation period, OBS audio capture device selector, Simple audio issue detection switch, Audio match tolerance slider, and microphone selection dropdown directly within the client settings window.
 
 ##### Run on startup
 
@@ -165,9 +165,9 @@ Fields to configure the OBS connection:
 
 Changes are saved and applied immediately.
 
-##### Skipped frames threshold
+##### Skipped frames threshold and evaluation period
 
-Number input field to set the threshold of skipped frames (due to rendering lag, encoder overload, or network issues) per minute after which the corresponding alert status is broadcast. Alerts are calculated over a rolling 60-second delta (rather than cumulative totals) to prevent persistent alerts after recovery, and clear after staying below threshold for a 5-second cooldown period.
+Input fields to set the threshold of skipped frames (due to rendering lag, encoder overload, or network issues) and the evaluation period in seconds (default `5` seconds, range `1`–`300` seconds). When the number of dropped frames measured within the evaluation window exceeds the threshold, the corresponding alert status is broadcast. Alerts are evaluated over a rolling time window (rather than cumulative totals) to prevent persistent alerts after recovery, and clear after staying below threshold for a 5-second cooldown period.
 
 ##### Game audio capture device selection
 
@@ -234,7 +234,7 @@ The server monitors the audio capture status of the target device in OBS and bro
 In addition to basic audio capture statuses, the server also monitors and compares an **RMS Envelope Correlation** between the game audio output and the audio captured by OBS:
 
 > [!NOTE]
-> **Alert Suppression:** If the microphone or audio capture device is disconnected or muted, algorithmic correlation anomaly alerts (`sound issue`) are suppressed to avoid redundant alarms.
+> **Alert Suppression:** If the microphone or audio capture device is disconnected, muted, or not present in the active OBS scene, algorithmic correlation anomaly alerts (`sound issue`) are suppressed to avoid redundant or false alarms.
 
 1. **On the Gaming PC:** A lightweight background worker uses `WASAPI Loopback Capture` to monitor the default audio output device (or the dedicated audio interface assigned to the game). It computes RMS (root-mean-square volume in dBFS) and peak values in **100ms sub-sampling windows** (10 Hz). If the Gaming PC does not send this telemetry, the server treats it as silence on the client side and does not trigger false alerts.
 2. **Network Transmission:** The worker batches these 100ms readings into a single compact UDP packet sent to the Server once per second: `[timestamp_ms, [rms_db_0, rms_db_1, ... rms_db_9]]`.
@@ -257,9 +257,9 @@ The server checks process health each second via the WebSocket connection. If OB
 
 Via `GetStreamStatus`, the server retrieves information about active streaming and recording. If an output is active, the server monitors and broadcasts:
 - Increasing reconnection attempts: broadcasts `obs reconnecting` status to all connected clients, sets `obs reconnect` icon in the system tray, and displays `OBS reconnecting` tooltip on hover. Clears when reconnect succeeds or stream is stopped.
-- Number of skipped frames due to network issues exceeds the rolling 60-second threshold: broadcasts `obs network issue` status to all connected clients, sets `obs network issue` icon in the system tray, and displays `OBS network issue` tooltip on hover. Clears after a 5-second cooldown below threshold or when streaming stops.
+- Number of skipped frames due to network issues exceeds the threshold across the configured evaluation period (default 5s, range 1–300s): broadcasts `obs network issue` status to all connected clients, sets `obs network issue` icon in the system tray, and displays `OBS network issue` tooltip on hover. Clears after a 5-second cooldown below threshold or when streaming stops.
 
-Via `GetStats`, the server retrieves information about skipped frames due to rendering lag or encoder overload. If the rolling 60-second rate exceeds the threshold, it broadcasts the `obs render issue` status to all connected clients, sets the `obs render issue` icon in the system tray, and displays `OBS render issue` tooltip on hover. Clears after a 5-second cooldown below threshold.
+Via `GetStats`, the server retrieves information about skipped frames due to rendering lag or encoder overload. If the rate across the evaluation period exceeds the threshold, it broadcasts the `obs render issue` status to all connected clients, sets the `obs render issue` icon in the system tray, and displays `OBS render issue` tooltip on hover. Clears after a 5-second cooldown below threshold.
 
 ## Client application
 

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using StreamHelper.Shared.Common;
+using StreamHelper.Shared.Obs;
 using StreamHelper.Shared.Protocol;
 
 namespace StreamHelper.Client.Config;
@@ -46,7 +47,8 @@ public sealed class ClientSettings
     public string ObsIp { get; set; } = "127.0.0.1";
     public int ObsPort { get; set; } = 4455;
     public string ObsPassword { get; set; } = string.Empty;
-    public int SkippedFramesThreshold { get; set; } = 60;
+    public int SkippedFramesThreshold { get; set; } = ObsSettingsConstants.DefaultSkippedFramesThreshold;
+    public int SkippedFramesPeriodSeconds { get; set; } = ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds;
     public string? ObsAudioDevice { get; set; }
     public double AudioMatchToleranceDb { get; set; } = 20;
     public bool SimpleAudioIssueDetection { get; set; }
@@ -79,10 +81,18 @@ public sealed class ClientSettings
                     settings.AnimationCycles = Math.Clamp(settings.AnimationCycles <= 0 ? 1 : settings.AnimationCycles, 1, 10);
                     settings.OverlayWidth = Math.Clamp(settings.OverlayWidth, 32, 1024);
                     settings.OverlayHeight = Math.Clamp(settings.OverlayHeight, 32, 1024);
+                    settings.SkippedFramesThreshold = Math.Clamp(
+                        settings.SkippedFramesThreshold < ObsSettingsConstants.MinSkippedFramesThreshold ? ObsSettingsConstants.DefaultSkippedFramesThreshold : settings.SkippedFramesThreshold,
+                        ObsSettingsConstants.MinSkippedFramesThreshold,
+                        ObsSettingsConstants.MaxSkippedFramesThreshold);
+                    settings.SkippedFramesPeriodSeconds = Math.Clamp(
+                        settings.SkippedFramesPeriodSeconds <= 0 ? ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds : settings.SkippedFramesPeriodSeconds,
+                        ObsSettingsConstants.MinSkippedFramesPeriodSeconds,
+                        ObsSettingsConstants.MaxSkippedFramesPeriodSeconds);
                     settings.AudioMatchToleranceDb = Math.Clamp(settings.AudioMatchToleranceDb, 0, 40);
                     if (settings.DebugLogging) AppLogger.IsDebugEnabled = true;
                     AppLogger.Info($"[ClientSettings] Loaded client settings from '{path}'.");
-                    AppLogger.Debug($"[ClientSettings] Mode={settings.Mode}, ServerIp={settings.ServerIp}:{settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}, GameAudio={settings.GameAudioMonitoringEnabled} ('{settings.GameAudioOutputDeviceName}'), Cycles={settings.AnimationCycles}, AudioMatchToleranceDb={settings.AudioMatchToleranceDb}, SimpleAudioIssueDetection={settings.SimpleAudioIssueDetection}");
+                    AppLogger.Debug($"[ClientSettings] Mode={settings.Mode}, ServerIp={settings.ServerIp}:{settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}, SkippedFramesPeriod={settings.SkippedFramesPeriodSeconds}s, GameAudio={settings.GameAudioMonitoringEnabled} ('{settings.GameAudioOutputDeviceName}'), Cycles={settings.AnimationCycles}, AudioMatchToleranceDb={settings.AudioMatchToleranceDb}, SimpleAudioIssueDetection={settings.SimpleAudioIssueDetection}");
                     return settings;
                 }
             }
@@ -118,7 +128,7 @@ public sealed class ClientSettings
             var json = JsonSerializer.Serialize(this, ClientSettingsJsonContext.Default.ClientSettings);
             File.WriteAllText(path, json);
             AppLogger.Info($"[ClientSettings] Saved client settings to '{path}'.");
-            AppLogger.Debug($"[ClientSettings] Mode={Mode}, ServerIp={ServerIp}:{Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}, GameAudio={GameAudioMonitoringEnabled} ('{GameAudioOutputDeviceName}'), Overlay=({OverlayCenterX},{OverlayCenterY},{OverlayWidth}x{OverlayHeight}, Opacity={Opacity}%, Freq={PulseFrequency}s, Cycles={AnimationCycles}), AudioMatchToleranceDb={AudioMatchToleranceDb}, SimpleAudioIssueDetection={SimpleAudioIssueDetection}");
+            AppLogger.Debug($"[ClientSettings] Mode={Mode}, ServerIp={ServerIp}:{Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}, SkippedFramesPeriod={SkippedFramesPeriodSeconds}s, GameAudio={GameAudioMonitoringEnabled} ('{GameAudioOutputDeviceName}'), Overlay=({OverlayCenterX},{OverlayCenterY},{OverlayWidth}x{OverlayHeight}, Opacity={Opacity}%, Freq={PulseFrequency}s, Cycles={AnimationCycles}), AudioMatchToleranceDb={AudioMatchToleranceDb}, SimpleAudioIssueDetection={SimpleAudioIssueDetection}");
         }
         catch (Exception ex)
         {

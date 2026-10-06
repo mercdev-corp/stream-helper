@@ -374,6 +374,25 @@ public sealed class AudioTelemetryAndCorrelationTests
     }
 
     [TestMethod]
+    public void AudioCorrelationEngine_NotInActiveScene_SuppressesSoundIssueAlert()
+    {
+        var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);
+        var engine = new AudioCorrelationEngine(silenceDetector: silenceDetector);
+
+        // Feed reading that triggers silence issue (client active -20, obs silent -80)
+        engine.ProcessClientReading(-20.0);
+        Assert.IsTrue(engine.HasSoundIssue);
+
+        // Not in active scene -> suppresses sound issue!
+        engine.UpdateSuppressionStates(obsDeviceDisconnected: false, obsDeviceMuted: false, isNotInActiveScene: true);
+        Assert.IsFalse(engine.HasSoundIssue, "Sound issue should be suppressed when capture source is not in active scene");
+
+        // Back in active scene -> alert becomes visible again
+        engine.UpdateSuppressionStates(obsDeviceDisconnected: false, obsDeviceMuted: false, isNotInActiveScene: false);
+        Assert.IsTrue(engine.HasSoundIssue, "Sound issue should restore when source returns to active scene");
+    }
+
+    [TestMethod]
     public void AudioCorrelationEngine_StaleObsMeters_ExpiresToSilence()
     {
         var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);

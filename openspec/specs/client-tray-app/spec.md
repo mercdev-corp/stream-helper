@@ -112,7 +112,7 @@ The settings dialog SHALL provide sliders for maximum opacity (range 0 to 100, d
 The client application SHALL store all configuration settings in `stream-helper-client-settings.json` located strictly within the application's executable directory, preserving independent Dual PC and Single PC configuration parameters across mode switches.
 
 #### Scenario: Settings saved on modification
-- **WHEN** any setting (operational mode, port, server IP, OBS settings, skipped frames threshold, audio devices, retry timeout, opacity, frequency, animation cycles, overlay geometry) is modified
+- **WHEN** any setting (operational mode, port, server IP, OBS settings, skipped frames threshold, skipped frames evaluation period, audio devices, retry timeout, opacity, frequency, animation cycles, overlay geometry) is modified
 - **THEN** the changes are saved immediately to `stream-helper-client-settings.json` in the local application folder
 
 #### Scenario: Coexistence of Dual PC and Single PC parameters
@@ -176,7 +176,7 @@ The client settings dialog SHALL adapt its layout based on the active operationa
 
 #### Scenario: Single PC layout presentation
 - **WHEN** the settings dialog is viewed in Single PC mode
-- **THEN** the dialog displays OBS connection fields (IP, port, password toggle), skipped frames threshold, OBS audio capture device dropdown, OS microphone selection dropdown, Game Audio Monitoring toggle, and Game Audio Output selector, while hiding the server IP and server UDP port controls
+- **THEN** the dialog displays OBS connection fields (IP, port, password toggle), skipped frames threshold, evaluation period in seconds (default 5, range 1 to 300), OBS audio capture device dropdown, OS microphone selection dropdown, Game Audio Monitoring toggle, and Game Audio Output selector, while hiding the server IP and server UDP port controls
 
 #### Scenario: Single PC missing microphone styling
 - **WHEN** the settings dialog is in Single PC mode and the saved microphone is not currently connected to the machine

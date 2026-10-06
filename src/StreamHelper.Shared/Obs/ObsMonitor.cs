@@ -11,6 +11,7 @@ public sealed class ObsMonitor : IObsMonitor
 {
     private readonly object _lock = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly SemaphoreSlim _sceneCheckLock = new(1, 1);
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _loopCts;
     private System.Threading.Timer? _reconnectTimer;
@@ -21,6 +22,7 @@ public sealed class ObsMonitor : IObsMonitor
     private string? _password;
     private int _retryTimeoutSeconds = 5;
     private int _skippedFramesThreshold = 50;
+    private int _skippedFramesPeriodSeconds = ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds;
     private string? _audioDeviceName;
 
     private bool _isRunning;
@@ -32,12 +34,15 @@ public sealed class ObsMonitor : IObsMonitor
     private bool _hasRenderIssue;
     private bool _isCaptureDeviceDisconnected;
     private bool _isCaptureDeviceMuted;
+    private bool _isAudioSourceInCurrentScene = true;
+    private string? _currentProgramSceneName;
+    private readonly HashSet<string> _specialAudioInputs = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _availableAudioInputs = new();
     private bool _disposed;
 
-    private readonly RollingFrameCounter _networkDroppedCounter = new();
-    private readonly RollingFrameCounter _renderDroppedCounter = new();
-    private readonly RollingFrameCounter _encoderDroppedCounter = new();
+    private readonly RollingFrameCounter _networkDroppedCounter;
+    private readonly RollingFrameCounter _renderDroppedCounter;
+    private readonly RollingFrameCounter _encoderDroppedCounter;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pendingRequests = new();
 
     public bool IsConnected => _isConnected;
@@ -48,6 +53,15 @@ public sealed class ObsMonitor : IObsMonitor
     public bool HasRenderIssue => _hasRenderIssue;
     public bool IsCaptureDeviceDisconnected => _isCaptureDeviceDisconnected;
     public bool IsCaptureDeviceMuted => _isCaptureDeviceMuted;
+    public bool IsAudioSourceInCurrentScene => _isAudioSourceInCurrentScene;
+    public int SkippedFramesPeriodSeconds
+    {
+        get
+        {
+            lock (_lock) return _skippedFramesPeriodSeconds;
+        }
+    }
+
     public IReadOnlyList<string> AvailableAudioInputs
     {
         get
@@ -91,7 +105,8 @@ public sealed class ObsMonitor : IObsMonitor
         string? password = null,
         int retryTimeoutSeconds = 5,
         int skippedFramesThreshold = 50,
-        string? audioDeviceName = null)
+        string? audioDeviceName = null,
+        int skippedFramesPeriodSeconds = ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds)
     {
         _host = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host;
         _port = port > 0 ? port : 4455;
@@ -99,6 +114,15 @@ public sealed class ObsMonitor : IObsMonitor
         _retryTimeoutSeconds = Math.Max(1, retryTimeoutSeconds);
         _skippedFramesThreshold = Math.Max(1, skippedFramesThreshold);
         _audioDeviceName = audioDeviceName;
+        _skippedFramesPeriodSeconds = Math.Clamp(
+            skippedFramesPeriodSeconds <= 0 ? ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds : skippedFramesPeriodSeconds,
+            ObsSettingsConstants.MinSkippedFramesPeriodSeconds,
+            ObsSettingsConstants.MaxSkippedFramesPeriodSeconds);
+
+        var window = TimeSpan.FromSeconds(_skippedFramesPeriodSeconds);
+        _networkDroppedCounter = new RollingFrameCounter(window);
+        _renderDroppedCounter = new RollingFrameCounter(window);
+        _encoderDroppedCounter = new RollingFrameCounter(window);
 
         ConnectionChanged += _ => ConnectionStateChanged?.Invoke(ConnectionState);
         StateChanged += () =>
@@ -111,7 +135,7 @@ public sealed class ObsMonitor : IObsMonitor
 
     public void ConnectAsync(string host, int port, string? password)
     {
-        UpdateConfig(host, port, password, _retryTimeoutSeconds, _skippedFramesThreshold, _audioDeviceName);
+        UpdateConfig(host, port, password, _retryTimeoutSeconds, _skippedFramesThreshold, _audioDeviceName, _skippedFramesPeriodSeconds);
         Start();
     }
 
@@ -122,7 +146,7 @@ public sealed class ObsMonitor : IObsMonitor
 
     public void SetAudioInputName(string? name)
     {
-        UpdateConfig(_host, _port, _password, _retryTimeoutSeconds, _skippedFramesThreshold, name);
+        UpdateConfig(_host, _port, _password, _retryTimeoutSeconds, _skippedFramesThreshold, name, _skippedFramesPeriodSeconds);
         if (_isConnected)
         {
             Task.Run(async () =>
@@ -130,6 +154,7 @@ public sealed class ObsMonitor : IObsMonitor
                 try
                 {
                     await CheckTargetAudioDeviceAsync().ConfigureAwait(false);
+                    await CheckAudioSourceScenePresenceAsync().ConfigureAwait(false);
                 }
                 catch
                 {
@@ -140,7 +165,26 @@ public sealed class ObsMonitor : IObsMonitor
 
     public void SetSkippedFramesThreshold(int threshold)
     {
-        UpdateConfig(_host, _port, _password, _retryTimeoutSeconds, threshold, _audioDeviceName);
+        UpdateConfig(_host, _port, _password, _retryTimeoutSeconds, threshold, _audioDeviceName, _skippedFramesPeriodSeconds);
+    }
+
+    public void SetSkippedFramesPeriod(int seconds)
+    {
+        int clamped;
+        lock (_lock)
+        {
+            clamped = Math.Clamp(
+                seconds <= 0 ? ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds : seconds,
+                ObsSettingsConstants.MinSkippedFramesPeriodSeconds,
+                ObsSettingsConstants.MaxSkippedFramesPeriodSeconds);
+            if (_skippedFramesPeriodSeconds == clamped) return;
+            _skippedFramesPeriodSeconds = clamped;
+            var window = TimeSpan.FromSeconds(clamped);
+            _networkDroppedCounter.Window = window;
+            _renderDroppedCounter.Window = window;
+            _encoderDroppedCounter.Window = window;
+        }
+        AppLogger.Info($"[ObsMonitor] Skipped frames evaluation period set to {clamped}s.");
     }
 
     public void UpdateConfig(
@@ -149,7 +193,8 @@ public sealed class ObsMonitor : IObsMonitor
         string? password,
         int retryTimeoutSeconds,
         int skippedFramesThreshold,
-        string? audioDeviceName)
+        string? audioDeviceName,
+        int skippedFramesPeriodSeconds)
     {
         bool reconnectNeeded = false;
         string newHost;
@@ -169,15 +214,37 @@ public sealed class ObsMonitor : IObsMonitor
             _retryTimeoutSeconds = Math.Max(1, retryTimeoutSeconds);
             _skippedFramesThreshold = Math.Max(1, skippedFramesThreshold);
             _audioDeviceName = audioDeviceName;
+
+            int clampedPeriod = Math.Clamp(
+                skippedFramesPeriodSeconds <= 0 ? ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds : skippedFramesPeriodSeconds,
+                ObsSettingsConstants.MinSkippedFramesPeriodSeconds,
+                ObsSettingsConstants.MaxSkippedFramesPeriodSeconds);
+            if (_skippedFramesPeriodSeconds != clampedPeriod)
+            {
+                _skippedFramesPeriodSeconds = clampedPeriod;
+                var window = TimeSpan.FromSeconds(clampedPeriod);
+                _networkDroppedCounter.Window = window;
+                _renderDroppedCounter.Window = window;
+                _encoderDroppedCounter.Window = window;
+            }
         }
 
-        AppLogger.Info($"[ObsMonitor] Configuration updated: host={newHost}, port={newPort}, auth={(string.IsNullOrEmpty(password) ? "none" : "configured")}, timeout={_retryTimeoutSeconds}s, threshold={_skippedFramesThreshold}, audioDevice='{audioDeviceName ?? "None"}'. Reconnect needed: {reconnectNeeded}.");
+        AppLogger.Info($"[ObsMonitor] Configuration updated: host={newHost}, port={newPort}, auth={(string.IsNullOrEmpty(password) ? "none" : "configured")}, timeout={_retryTimeoutSeconds}s, threshold={_skippedFramesThreshold}, period={_skippedFramesPeriodSeconds}s, audioDevice='{audioDeviceName ?? "None"}'. Reconnect needed: {reconnectNeeded}.");
 
         if (reconnectNeeded && _isRunning)
         {
             DisconnectAndScheduleReconnect();
         }
     }
+
+    public void UpdateConfig(
+        string host,
+        int port,
+        string? password,
+        int retryTimeoutSeconds,
+        int skippedFramesThreshold,
+        string? audioDeviceName)
+        => UpdateConfig(host, port, password, retryTimeoutSeconds, skippedFramesThreshold, audioDeviceName, _skippedFramesPeriodSeconds);
 
     public void Start()
     {
@@ -203,14 +270,17 @@ public sealed class ObsMonitor : IObsMonitor
         StopTimers();
         DisconnectSocket();
         ResetState();
+        ConnectionChanged?.Invoke(false);
+        StateChanged?.Invoke();
     }
 
     private void StartPolling()
     {
         lock (_lock)
         {
+            if (_disposed) return;
             _pollTimer?.Dispose();
-            _pollTimer = new System.Threading.Timer(OnPollTick, null, 1000, 1000);
+            _pollTimer = new System.Threading.Timer(OnPollTick, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         }
     }
 
@@ -218,10 +288,10 @@ public sealed class ObsMonitor : IObsMonitor
     {
         lock (_lock)
         {
-            _pollTimer?.Dispose();
-            _pollTimer = null;
             _reconnectTimer?.Dispose();
             _reconnectTimer = null;
+            _pollTimer?.Dispose();
+            _pollTimer = null;
         }
     }
 
@@ -229,90 +299,116 @@ public sealed class ObsMonitor : IObsMonitor
     {
         lock (_lock)
         {
-            if (!_isRunning || _disposed) return;
-            _reconnectTimer?.Dispose();
-            _reconnectTimer = null;
+            if (!_isRunning || _disposed || _isConnected) return;
         }
 
-        AppLogger.Debug($"[ObsMonitor] Initiating connection loop to ws://{_host}:{_port}...");
-        Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
-            try
+            while (true)
             {
-                await ConnectAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                AppLogger.Warn($"[ObsMonitor] Connection to ws://{_host}:{_port} failed: {ex.Message}");
-                ScheduleReconnect();
+                string host;
+                int port;
+                lock (_lock)
+                {
+                    if (!_isRunning || _disposed || _isConnected) return;
+                    host = _host;
+                    port = _port;
+                }
+
+                try
+                {
+                    AppLogger.Info($"[ObsMonitor] Connecting to OBS WebSocket at ws://{host}:{port}...");
+                    _loopCts?.Dispose();
+                    _loopCts = new CancellationTokenSource();
+                    var ct = _loopCts.Token;
+
+                    var ws = new ClientWebSocket();
+                    lock (_lock)
+                    {
+                        _webSocket = ws;
+                    }
+
+                    var uri = new Uri($"ws://{host}:{port}");
+                    using (var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                    using (var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, connectCts.Token))
+                    {
+                        await ws.ConnectAsync(uri, linked.Token).ConfigureAwait(false);
+                    }
+
+                    AppLogger.Info($"[ObsMonitor] WebSocket connected to ws://{host}:{port}. Receiving messages...");
+                    await ReceiveLoopAsync(ws, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected on stop/cancel
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Debug($"[ObsMonitor] Connection attempt failed: {ex.Message}");
+                }
+
+                // If loop finished, cleanup connection and wait retry timeout
+                CleanupConnection();
+
+                int timeoutSec;
+                lock (_lock)
+                {
+                    if (!_isRunning || _disposed) return;
+                    timeoutSec = _retryTimeoutSeconds;
+                }
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(timeoutSec)).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
         });
     }
 
-    private async Task ConnectAsync()
+    private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken ct)
     {
-        DisconnectSocket();
+        var buffer = new byte[8192];
+        var ms = new MemoryStream();
 
-        ClientWebSocket ws;
-        CancellationTokenSource cts;
-        string host;
-        int port;
-        lock (_lock)
+        while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
         {
-            if (!_isRunning || _disposed) return;
-            _loopCts = new CancellationTokenSource();
-            _webSocket = new ClientWebSocket();
-            _webSocket.Options.Proxy = null;
-            ws = _webSocket;
-            cts = _loopCts;
-            host = _host;
-            port = _port;
-        }
-
-        var uri = new Uri($"ws://{host}:{port}");
-        AppLogger.Info($"[ObsMonitor] Connecting to OBS WebSocket at {uri}...");
-        using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, connectCts.Token);
-
-        await ws.ConnectAsync(uri, linkedCts.Token).ConfigureAwait(false);
-
-        // Run message loop
-        await RunReceiveLoopAsync(ws, cts.Token).ConfigureAwait(false);
-    }
-
-    private async Task RunReceiveLoopAsync(ClientWebSocket ws, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[65536];
-
-        while (!cancellationToken.IsCancellationRequested && ws.State == WebSocketState.Open)
-        {
-            using var ms = new MemoryStream();
             WebSocketReceiveResult result;
-            do
+            try
             {
-                result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken).ConfigureAwait(false);
-                if (result.MessageType == WebSocketMessageType.Close)
-                {
-                    AppLogger.Warn($"[ObsMonitor] OBS WebSocket closed by remote server: {result.CloseStatus} - {result.CloseStatusDescription}");
-                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None).ConfigureAwait(false);
-                    HandleDisconnected();
-                    return;
-                }
-                ms.Write(buffer, 0, result.Count);
-            } while (!result.EndOfMessage);
+                result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug($"[ObsMonitor] ReceiveAsync error: {ex.Message}");
+                break;
+            }
 
-            ms.Seek(0, SeekOrigin.Begin);
-            ProcessMessage(ms.ToArray());
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                AppLogger.Info($"[ObsMonitor] WebSocket closed by server.");
+                break;
+            }
+
+            ms.Write(buffer, 0, result.Count);
+
+            if (result.EndOfMessage)
+            {
+                var json = Encoding.UTF8.GetString(ms.ToArray());
+                ms.SetLength(0);
+                ProcessMessage(json);
+            }
         }
-
-        HandleDisconnected();
     }
 
-    private void ProcessMessage(byte[] jsonBytes)
+    private void ProcessMessage(string json)
     {
         try
         {
-            using var doc = JsonDocument.Parse(jsonBytes);
+            using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             if (!root.TryGetProperty("op", out var opProp)) return;
             var op = opProp.GetInt32();
@@ -335,36 +431,39 @@ public sealed class ObsMonitor : IObsMonitor
         }
         catch (Exception ex)
         {
-            AppLogger.Warn($"[ObsMonitor] Error processing OBS message: {ex.Message}", ex);
+            AppLogger.Debug($"[ObsMonitor] Error parsing OBS message: {ex.Message}");
         }
     }
 
     private void HandleHello(JsonElement data)
     {
         string? authResponse = null;
-        string? password;
-        lock (_lock)
+        if (data.TryGetProperty("authentication", out var authProp))
         {
-            password = _password;
-        }
-
-        if (data.TryGetProperty("authentication", out var authElement))
-        {
-            if (authElement.TryGetProperty("challenge", out var challengeProp) &&
-                authElement.TryGetProperty("salt", out var saltProp))
+            string? password;
+            lock (_lock)
             {
-                var challenge = challengeProp.GetString() ?? string.Empty;
-                var salt = saltProp.GetString() ?? string.Empty;
-                var secret = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes((password ?? string.Empty) + salt)));
-                authResponse = Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(secret + challenge)));
+                password = _password;
+            }
+
+            if (!string.IsNullOrEmpty(password) &&
+                authProp.TryGetProperty("challenge", out var challengeProp) &&
+                authProp.TryGetProperty("salt", out var saltProp))
+            {
+                var challenge = challengeProp.GetString();
+                var salt = saltProp.GetString();
+                if (challenge != null && salt != null)
+                {
+                    authResponse = GenerateAuthResponse(password, salt, challenge);
+                }
             }
         }
 
         AppLogger.Debug($"[ObsMonitor] Received Hello from OBS. Authentication required: {authResponse != null}. Sending Identify...");
 
         // EventSubscriptions:
-        // General (1) | Inputs (8) | Outputs (64) | InputVolumeMeters (65536) = 65609
-        int eventSubscriptions = 1 | 8 | 64 | 65536;
+        // General (1) | Scenes (4) | Inputs (8) | Outputs (64) | InputVolumeMeters (65536) = 65613
+        int eventSubscriptions = 1 | 4 | 8 | 64 | 65536;
 
         var identifyData = new Dictionary<string, object>
         {
@@ -452,6 +551,19 @@ public sealed class ObsMonitor : IObsMonitor
                 }
                 AppLogger.Info($"[ObsMonitor] RecordStateChanged: isRecording={_isRecording}");
                 StateChanged?.Invoke();
+                break;
+
+            case "CurrentProgramSceneChanged":
+                if (eventData.TryGetProperty("sceneName", out var sceneNameProp))
+                {
+                    var newScene = sceneNameProp.GetString();
+                    AppLogger.Info($"[ObsMonitor] CurrentProgramSceneChanged: '{_currentProgramSceneName}' -> '{newScene}'");
+                    lock (_lock)
+                    {
+                        _currentProgramSceneName = newScene;
+                    }
+                    _ = CheckAudioSourceScenePresenceAsync();
+                }
                 break;
 
             case "InputMuteStateChanged":
@@ -731,6 +843,9 @@ public sealed class ObsMonitor : IObsMonitor
         // Check target audio device presence & mute status
         await CheckTargetAudioDeviceAsync().ConfigureAwait(false);
 
+        // Check scene presence
+        await CheckAudioSourceScenePresenceAsync().ConfigureAwait(false);
+
         StateChanged?.Invoke();
     }
 
@@ -812,6 +927,197 @@ public sealed class ObsMonitor : IObsMonitor
         }
     }
 
+    private async Task CheckAudioSourceScenePresenceAsync()
+    {
+        string? targetAudioDevice;
+        bool isConnected;
+        string? programScene;
+        lock (_lock)
+        {
+            targetAudioDevice = _audioDeviceName;
+            isConnected = _isConnected;
+            programScene = _currentProgramSceneName;
+        }
+
+        if (!isConnected || string.IsNullOrEmpty(targetAudioDevice))
+        {
+            if (!_isAudioSourceInCurrentScene)
+            {
+                _isAudioSourceInCurrentScene = true;
+                StateChanged?.Invoke();
+            }
+            return;
+        }
+
+        bool isSpecial;
+        lock (_lock)
+        {
+            isSpecial = _specialAudioInputs.Contains(targetAudioDevice);
+        }
+
+        if (isSpecial)
+        {
+            if (!_isAudioSourceInCurrentScene)
+            {
+                _isAudioSourceInCurrentScene = true;
+                AppLogger.Info($"[ObsMonitor] Target OBS audio input '{targetAudioDevice}' is a global special input; treated as present in scene.");
+                StateChanged?.Invoke();
+            }
+            return;
+        }
+
+        if (string.IsNullOrEmpty(programScene))
+        {
+            try
+            {
+                var sceneResp = await SendRequestAsync("GetCurrentProgramScene").ConfigureAwait(false);
+                if (sceneResp.ValueKind == JsonValueKind.Object && sceneResp.TryGetProperty("currentProgramSceneName", out var curSceneProp))
+                {
+                    programScene = curSceneProp.GetString();
+                    lock (_lock)
+                    {
+                        _currentProgramSceneName = programScene;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug($"[ObsMonitor] Failed to query current program scene: {ex.Message}");
+                return;
+            }
+        }
+
+        if (string.IsNullOrEmpty(programScene))
+        {
+            return;
+        }
+
+        if (!await _sceneCheckLock.WaitAsync(0).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            bool isPresent = await IsSourceInSceneHierarchyAsync(programScene, targetAudioDevice).ConfigureAwait(false);
+            if (_isAudioSourceInCurrentScene != isPresent)
+            {
+                _isAudioSourceInCurrentScene = isPresent;
+                AppLogger.Info($"[ObsMonitor] Target OBS audio input '{targetAudioDevice}' scene presence in '{programScene}' changed: isPresent={isPresent}.");
+                StateChanged?.Invoke();
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Debug($"[ObsMonitor] Error checking scene hierarchy presence: {ex.Message}");
+        }
+        finally
+        {
+            _sceneCheckLock.Release();
+        }
+    }
+
+    private async Task<bool> IsSourceInSceneHierarchyAsync(string rootScene, string targetSource)
+    {
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        async Task<bool> SearchSceneAsync(string sceneName, int depth)
+        {
+            if (depth > 5 || !visited.Add(sceneName)) return false;
+
+            try
+            {
+                var resp = await SendRequestAsync("GetSceneItemList", new { sceneName }).ConfigureAwait(false);
+                if (resp.ValueKind == JsonValueKind.Object && resp.TryGetProperty("sceneItems", out var itemsArray))
+                {
+                    foreach (var item in itemsArray.EnumerateArray())
+                    {
+                        string? sourceName = item.TryGetProperty("sourceName", out var sn) ? sn.GetString() : null;
+                        if (string.IsNullOrEmpty(sourceName)) continue;
+
+                        if (string.Equals(sourceName, targetSource, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+
+                        bool isGroup = item.TryGetProperty("isGroup", out var ig) && ig.ValueKind == JsonValueKind.True;
+                        if (isGroup)
+                        {
+                            if (await SearchGroupAsync(sourceName, depth + 1).ConfigureAwait(false))
+                            {
+                                return true;
+                            }
+                        }
+
+                        string? sourceType = item.TryGetProperty("sourceType", out var st) ? st.GetString() : null;
+                        if (string.Equals(sourceType, "OBS_SOURCE_TYPE_SCENE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (await SearchSceneAsync(sourceName, depth + 1).ConfigureAwait(false))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug($"[ObsMonitor] Error querying scene item list for '{sceneName}': {ex.Message}");
+            }
+
+            return false;
+        }
+
+        async Task<bool> SearchGroupAsync(string groupName, int depth)
+        {
+            if (depth > 5 || !visited.Add(groupName)) return false;
+
+            try
+            {
+                var resp = await SendRequestAsync("GetGroupSceneItemList", new { sceneName = groupName }).ConfigureAwait(false);
+                if (resp.ValueKind == JsonValueKind.Object && resp.TryGetProperty("sceneItems", out var itemsArray))
+                {
+                    foreach (var item in itemsArray.EnumerateArray())
+                    {
+                        string? sourceName = item.TryGetProperty("sourceName", out var sn) ? sn.GetString() : null;
+                        if (string.IsNullOrEmpty(sourceName)) continue;
+
+                        if (string.Equals(sourceName, targetSource, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+
+                        bool isGroup = item.TryGetProperty("isGroup", out var ig) && ig.ValueKind == JsonValueKind.True;
+                        if (isGroup)
+                        {
+                            if (await SearchGroupAsync(sourceName, depth + 1).ConfigureAwait(false))
+                            {
+                                return true;
+                            }
+                        }
+
+                        string? sourceType = item.TryGetProperty("sourceType", out var st) ? st.GetString() : null;
+                        if (string.Equals(sourceType, "OBS_SOURCE_TYPE_SCENE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (await SearchSceneAsync(sourceName, depth + 1).ConfigureAwait(false))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug($"[ObsMonitor] Error querying group scene item list for '{groupName}': {ex.Message}");
+            }
+
+            return false;
+        }
+
+        return await SearchSceneAsync(rootScene, 0).ConfigureAwait(false);
+    }
+
     public async Task RefreshAudioInputsAsync()
     {
         if (!_isConnected) return;
@@ -851,6 +1157,7 @@ public sealed class ObsMonitor : IObsMonitor
                 if (specialResult.ValueKind == JsonValueKind.Object)
                 {
                     string[] specialKeys = { "desktop1", "desktop2", "mic1", "mic2", "mic3", "mic4" };
+                    var detectedSpecials = new List<string>();
                     foreach (var key in specialKeys)
                     {
                         if (specialResult.TryGetProperty(key, out var prop) && prop.ValueKind == JsonValueKind.String)
@@ -859,7 +1166,17 @@ public sealed class ObsMonitor : IObsMonitor
                             if (!string.IsNullOrWhiteSpace(sName))
                             {
                                 names.Add(sName);
+                                detectedSpecials.Add(sName);
                             }
+                        }
+                    }
+
+                    lock (_lock)
+                    {
+                        _specialAudioInputs.Clear();
+                        foreach (var s in detectedSpecials)
+                        {
+                            _specialAudioInputs.Add(s);
                         }
                     }
                 }
@@ -883,6 +1200,7 @@ public sealed class ObsMonitor : IObsMonitor
 
             // Immediately re-check target device presence & mute status against updated inputs
             await CheckTargetAudioDeviceAsync().ConfigureAwait(false);
+            await CheckAudioSourceScenePresenceAsync().ConfigureAwait(false);
 
             if (inputsChanged)
             {
@@ -899,10 +1217,10 @@ public sealed class ObsMonitor : IObsMonitor
     private void DisconnectAndScheduleReconnect()
     {
         DisconnectSocket();
-        HandleDisconnected();
+        CleanupConnection();
     }
 
-    private void HandleDisconnected()
+    private void CleanupConnection()
     {
         bool wasConnected;
         bool hadInputs;
@@ -949,13 +1267,22 @@ public sealed class ObsMonitor : IObsMonitor
             _loopCts?.Dispose();
             _loopCts = null;
 
-            _webSocket?.Dispose();
-            _webSocket = null;
+            if (_webSocket != null)
+            {
+                try
+                {
+                    _webSocket.Dispose();
+                }
+                catch
+                {
+                }
+                _webSocket = null;
+            }
         }
 
-        foreach (var req in _pendingRequests.Values)
+        foreach (var kvp in _pendingRequests)
         {
-            req.TrySetCanceled();
+            kvp.Value.TrySetCanceled();
         }
         _pendingRequests.Clear();
     }
@@ -969,10 +1296,13 @@ public sealed class ObsMonitor : IObsMonitor
         _hasRenderIssue = false;
         _isCaptureDeviceDisconnected = false;
         _isCaptureDeviceMuted = false;
+        _isAudioSourceInCurrentScene = true;
+        _currentProgramSceneName = null;
 
         lock (_lock)
         {
             _availableAudioInputs.Clear();
+            _specialAudioInputs.Clear();
         }
 
         _networkDroppedCounter.Reset();
@@ -992,5 +1322,19 @@ public sealed class ObsMonitor : IObsMonitor
         StopTimers();
         DisconnectSocket();
         _sendLock.Dispose();
+        _sceneCheckLock.Dispose();
+    }
+
+    private static string GenerateAuthResponse(string password, string salt, string challenge)
+    {
+        // 1. secret = base64(sha256(password + salt))
+        var secretString = password + salt;
+        var secretBytes = SHA256.HashData(Encoding.UTF8.GetBytes(secretString));
+        var secretBase64 = Convert.ToBase64String(secretBytes);
+
+        // 2. authResponse = base64(sha256(secret + challenge))
+        var authString = secretBase64 + challenge;
+        var authBytes = SHA256.HashData(Encoding.UTF8.GetBytes(authString));
+        return Convert.ToBase64String(authBytes);
     }
 }

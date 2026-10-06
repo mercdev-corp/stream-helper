@@ -44,7 +44,15 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
         AudioCorrelationEngine? correlationEngine = null,
         AudioTelemetryReceiver? telemetryReceiver = null)
     {
-        _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        if (SynchronizationContext.Current == null)
+        {
+            _syncContext = new WindowsFormsSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(_syncContext);
+        }
+        else
+        {
+            _syncContext = SynchronizationContext.Current;
+        }
         _settings = settings ?? ServerSettings.Load();
 
         _broadcaster = broadcaster ?? new UdpBroadcaster(_settings.Port);
@@ -142,6 +150,8 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
             // Connect OBS if configured
             if (!string.IsNullOrEmpty(_settings.ObsIp))
             {
+                _obsMonitor.SetSkippedFramesThreshold(_settings.SkippedFramesThreshold);
+                _obsMonitor.SetSkippedFramesPeriod(_settings.SkippedFramesPeriodSeconds);
                 _obsMonitor.ConnectAsync(_settings.ObsIp, _settings.ObsPort, _settings.ObsPassword);
                 if (!string.IsNullOrEmpty(_settings.ObsAudioDevice))
                 {
@@ -155,6 +165,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
 
     internal ContextMenuStrip ContextMenu => _contextMenu;
     internal ToolStripMenuItem MenuDonate => _menuDonate;
+    internal AlertFlags? LastAlerts => _lastAlerts;
 
     private void PostToUiThread(Action action)
     {
@@ -187,9 +198,15 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
 
         bool obsAudioDisconnected = _obsMonitor.IsAudioSourceMissing;
         bool obsAudioMuted = _obsMonitor.IsAudioSourceMuted;
+        bool isNotInActiveScene = !_obsMonitor.IsAudioSourceInCurrentScene;
 
-        // Update correlation engine suppression states (OBS Device Disconnected -> Muted -> Correlation Sound Issue)
-        _correlationEngine.UpdateSuppressionStates(obsAudioDisconnected, obsAudioMuted);
+        // Update correlation engine suppression states (OBS Device Disconnected -> Muted -> Not In Active Scene -> Correlation Sound Issue)
+        _correlationEngine.UpdateSuppressionStates(obsAudioDisconnected, obsAudioMuted, isNotInActiveScene);
+
+        if (isNotInActiveScene && _correlationEngine.HasSoundIssue)
+        {
+            AppLogger.Debug($"[Server] Sound issue alert suppressed because capture source '{_settings.ObsAudioDevice}' is not present in active scene.");
+        }
 
         AlertFlags alerts = AlertFlags.None;
         if (micDisconnected) alerts |= AlertFlags.MicDisconnected;
@@ -204,12 +221,12 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
 
             if (obsAudioDisconnected) alerts |= AlertFlags.ObsCaptureDeviceDisconnected;
             else if (obsAudioMuted) alerts |= AlertFlags.ObsCaptureDeviceMuted;
-            else if (_correlationEngine.HasSoundIssue) alerts |= AlertFlags.ObsSoundCaptureIssue;
+            else if (!isNotInActiveScene && _correlationEngine.HasSoundIssue) alerts |= AlertFlags.ObsSoundCaptureIssue;
         }
 
         if (_lastAlerts != alerts)
         {
-            AppLogger.Info($"[Server] Alert state changed: [{_lastAlerts}] -> [{alerts}] (MicDisconnected={micDisconnected}, MicMuted={micMuted}, ObsState={_obsMonitor.ConnectionState}, ObsNet={_obsMonitor.HasNetworkCongestion}, ObsRender={_obsMonitor.HasRenderLag || _obsMonitor.HasEncodingLag}, ObsAudioMissing={obsAudioDisconnected}, ObsAudioMuted={obsAudioMuted}, SoundIssue={_correlationEngine.HasSoundIssue})");
+            AppLogger.Info($"[Server] Alert state changed: [{_lastAlerts}] -> [{alerts}] (MicDisconnected={micDisconnected}, MicMuted={micMuted}, ObsState={_obsMonitor.ConnectionState}, ObsNet={_obsMonitor.HasNetworkCongestion}, ObsRender={_obsMonitor.HasRenderLag || _obsMonitor.HasEncodingLag}, ObsAudioMissing={obsAudioDisconnected}, ObsAudioMuted={obsAudioMuted}, NotInActiveScene={isNotInActiveScene}, SoundIssue={_correlationEngine.HasSoundIssue})");
             _lastAlerts = alerts;
         }
         else
@@ -307,6 +324,12 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
                 {
                     AppLogger.Info($"[Server] Audio detection config changed callback triggered: tolerance={tolerance:F1} dB, simpleMode={simpleMode}");
                     _correlationEngine.Configure(tolerance, simpleMode);
+                    UpdateAllStates();
+                },
+                onSkippedFramesPeriodChanged: period =>
+                {
+                    AppLogger.Info($"[Server] Skipped frames period changed callback triggered: {period}s");
+                    _obsMonitor.SetSkippedFramesPeriod(period);
                     UpdateAllStates();
                 });
 
