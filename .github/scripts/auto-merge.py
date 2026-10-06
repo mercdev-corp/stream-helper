@@ -139,15 +139,37 @@ def evaluate_and_merge_pr(pr_number):
     while True:
         status_checks = pr_data.get("statusCheckRollup", [])
 
-        # Filter out auto-merge checks so we don't wait on our own job
-        relevant_checks = [
-            c for c in status_checks
-            if "auto-merge" not in c.get("name", "").lower()
-            and "auto merge" not in c.get("name", "").lower()
-            and "evaluate and auto-merge" not in c.get("name", "").lower()
+        # Filter out automation / utility workflows and self-checks so we only wait on actual CI test checks
+        ignored_keywords = [
+            "auto-merge",
+            "auto merge",
+            "evaluate and auto-merge",
+            "auto-pr",
+            "auto create",
+            "release",
         ]
 
-        if not relevant_checks:
+        def is_automation_check(check):
+            name = (check.get("name") or "").lower()
+            workflow = (check.get("workflowName") or "").lower()
+            context = (check.get("context") or "").lower()
+            return any(
+                kw in name or kw in workflow or kw in context
+                for kw in ignored_keywords
+            )
+
+        relevant_checks = [c for c in status_checks if not is_automation_check(c)]
+
+        # If there are multiple checks with the same name/workflow (e.g. from retries), take the latest one
+        latest_checks = {}
+        for c in relevant_checks:
+            key = (c.get("name"), c.get("workflowName"), c.get("context"))
+            started_at = c.get("startedAt") or ""
+            if key not in latest_checks or started_at >= (latest_checks[key].get("startedAt") or ""):
+                latest_checks[key] = c
+        deduped_checks = list(latest_checks.values())
+
+        if not deduped_checks:
             elapsed = int(time.time() - start_time)
             if elapsed < 30:
                 print(f"PR #{pr_number} has no CI status checks registered yet. Waiting 10s...")
@@ -163,7 +185,7 @@ def evaluate_and_merge_pr(pr_number):
                 return False
 
         failed_checks = [
-            c for c in relevant_checks
+            c for c in deduped_checks
             if c.get("status") == "COMPLETED" and c.get("conclusion") not in ("SUCCESS", "NEUTRAL", "SKIPPED")
         ]
         if failed_checks:
@@ -171,9 +193,9 @@ def evaluate_and_merge_pr(pr_number):
             print(f"PR #{pr_number} has failing check(s): {names}. Cannot merge.")
             return False
 
-        pending_checks = [c for c in relevant_checks if c.get("status") != "COMPLETED"]
+        pending_checks = [c for c in deduped_checks if c.get("status") != "COMPLETED"]
         if not pending_checks:
-            print(f"All {len(relevant_checks)} CI check(s) completed successfully!")
+            print(f"All {len(deduped_checks)} CI check(s) completed successfully!")
             break
 
         elapsed = int(time.time() - start_time)
