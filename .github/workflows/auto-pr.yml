@@ -56,10 +56,27 @@ jobs:
           echo "Checking if an open PR exists for branch '$BRANCH_NAME' targeting 'main'..."
           EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --base main --state open --json number --jq '.[0].number')
           
-          if [ -n "$EXISTING_PR" ]; then
+          if [ -z "$EXISTING_PR" ]; then
+            # Use commit subject or branch name as title
+            COMMIT_MSG=$(git log -1 --pretty=%s)
+            TITLE="${COMMIT_MSG:-$BRANCH_NAME}"
+
+            echo "Creating new PR: '$TITLE' ($BRANCH_NAME -> main)..."
+            gh pr create \
+              --base main \
+              --head "$BRANCH_NAME" \
+              --title "$TITLE" \
+              --body "Automated Pull Request created on push to branch \`$BRANCH_NAME\`." || true
+
+            EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --base main --state open --json number --jq '.[0].number')
+          else
             echo "An open PR #$EXISTING_PR already exists for $BRANCH_NAME."
+          fi
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Open PR #$EXISTING_PR is confirmed."
             if [ -n "$REVIEWER" ]; then
-              ASSIGNED_OR_APPROVED=$(gh pr view "$EXISTING_PR" --json reviews,reviewRequests --jq '[.reviewRequests[].login, (.reviews[] | select(.state == "APPROVED") | .author.login)][]' | grep -xF "$REVIEWER" || true)
+              ASSIGNED_OR_APPROVED=$(gh pr view "$EXISTING_PR" --json reviews,reviewRequests --jq '[.reviewRequests[].login, (.reviews[] | select(.state == "APPROVED") | .author.login)][]' 2>/dev/null | grep -xF "$REVIEWER" || true)
               if [ -z "$ASSIGNED_OR_APPROVED" ]; then
                 echo "Requesting review from '$REVIEWER' for PR #$EXISTING_PR..."
                 gh pr edit "$EXISTING_PR" --add-reviewer "$REVIEWER" 2>/dev/null || true
@@ -68,27 +85,7 @@ jobs:
               fi
             fi
             exit 0
+          else
+            echo "Error: Failed to find or create open PR for branch $BRANCH_NAME targeting main."
+            exit 1
           fi
-
-          # Use commit subject or branch name as title
-          COMMIT_MSG=$(git log -1 --pretty=%s)
-          TITLE="${COMMIT_MSG:-$BRANCH_NAME}"
-
-          echo "Creating new PR: '$TITLE' ($BRANCH_NAME -> main)..."
-          EXTRA_ARGS=()
-          if [ -n "$REVIEWER" ]; then
-            echo "Requesting review from '$REVIEWER'..."
-            EXTRA_ARGS+=(--reviewer "$REVIEWER")
-          fi
-
-          gh pr create \
-            --base main \
-            --head "$BRANCH_NAME" \
-            --title "$TITLE" \
-            --body "Automated Pull Request created on push to branch \`$BRANCH_NAME\`." \
-            "${EXTRA_ARGS[@]}" || \
-          gh pr create \
-            --base main \
-            --head "$BRANCH_NAME" \
-            --title "$TITLE" \
-            --body "Automated Pull Request created on push to branch \`$BRANCH_NAME\`."
