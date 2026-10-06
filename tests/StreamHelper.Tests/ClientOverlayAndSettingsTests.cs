@@ -39,7 +39,8 @@ public sealed class ClientOverlayAndSettingsTests
                 OverlayWidth = 96,
                 OverlayHeight = 96,
                 IsPaused = false,
-                DebugLogging = true
+                DebugLogging = true,
+                SkippedFramesPeriodSeconds = 18
             };
 
             original.Save(tempFolder);
@@ -64,6 +65,39 @@ public sealed class ClientOverlayAndSettingsTests
             Assert.AreEqual(original.OverlayHeight, loaded.OverlayHeight);
             Assert.AreEqual(original.IsPaused, loaded.IsPaused);
             Assert.AreEqual(original.DebugLogging, loaded.DebugLogging);
+            Assert.AreEqual(original.SkippedFramesPeriodSeconds, loaded.SkippedFramesPeriodSeconds);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ClientSettings_SkippedFramesPeriod_DefaultsAndClamps()
+    {
+        var tempFolder = TestDirectory.Create("ClientSkippedFramesPeriodClamp");
+        try
+        {
+            var def = new ClientSettings();
+            Assert.AreEqual(5, def.SkippedFramesPeriodSeconds);
+
+            var filePath = ClientSettings.GetFilePath(tempFolder);
+            Directory.CreateDirectory(tempFolder);
+
+            // Test non-positive falls back to default 5
+            File.WriteAllText(filePath, "{\"SkippedFramesPeriodSeconds\": 0}");
+            var loadedZero = ClientSettings.Load(tempFolder);
+            Assert.AreEqual(5, loadedZero.SkippedFramesPeriodSeconds);
+
+            File.WriteAllText(filePath, "{\"SkippedFramesPeriodSeconds\": -10}");
+            var loadedNeg = ClientSettings.Load(tempFolder);
+            Assert.AreEqual(5, loadedNeg.SkippedFramesPeriodSeconds);
+
+            // Test clamping above maximum (300)
+            File.WriteAllText(filePath, "{\"SkippedFramesPeriodSeconds\": 999}");
+            var loadedMax = ClientSettings.Load(tempFolder);
+            Assert.AreEqual(300, loadedMax.SkippedFramesPeriodSeconds);
         }
         finally
         {
@@ -432,7 +466,7 @@ public sealed class ClientOverlayAndSettingsTests
         timeout = DateTime.UtcNow.AddSeconds(6);
         while (DateTime.UtcNow < timeout)
         {
-            if (!listener.IsConnected) break;
+            if (!listener.IsConnected && listener.LastReportedState == MicState.Disconnected) break;
             await Task.Delay(50);
         }
 
@@ -1809,6 +1843,58 @@ public sealed class ClientOverlayAndSettingsTests
         Assert.IsNotNull(context);
     }
 
+    [TestMethod]
+    public void ClientSettingsForm_SkippedFramesControls_InitializedCorrectlyAndInvokesCallback()
+    {
+        var tempFolder = TestDirectory.Create("ClientSkippedControlsTest");
+
+        try
+        {
+            var settings = new ClientSettings
+            {
+                Mode = ClientMode.SinglePc,
+                SkippedFramesThreshold = 77,
+                SkippedFramesPeriodSeconds = 20
+            };
+            using var listener = new UdpListener(13998);
+            var mockAudio = new MockAudioMonitor();
+            var assetManager = new OverlayAssetManager();
+            using var overlay = new OverlayForm(settings, assetManager);
+            int callbackPeriod = 0;
+
+            using var form = new ClientSettingsForm(
+                settings,
+                listener,
+                mockAudio,
+                overlay,
+                onSkippedFramesPeriodChanged: p => callbackPeriod = p);
+
+            _ = form.Handle;
+
+            Assert.AreEqual("Skipped frames threshold:", form.SkippedFramesLabel.Text);
+            Assert.AreEqual(77, (int)form.SkippedFramesNumeric.Value);
+            Assert.AreEqual(1, (int)form.SkippedFramesNumeric.Minimum);
+            Assert.AreEqual(10000, (int)form.SkippedFramesNumeric.Maximum);
+
+            Assert.AreEqual("Evaluation period (seconds):", form.SkippedFramesPeriodLabel.Text);
+            Assert.AreEqual(20, (int)form.SkippedFramesPeriodNumeric.Value);
+            Assert.AreEqual(1, (int)form.SkippedFramesPeriodNumeric.Minimum);
+            Assert.AreEqual(300, (int)form.SkippedFramesPeriodNumeric.Maximum);
+
+            // Check right margin (SinglePc panel width 420, 20px right margin => Right <= 400)
+            Assert.IsTrue(form.SkippedFramesPeriodNumeric.Right <= 400, "20px right margin must be preserved");
+
+            // Change values and verify callback & settings update
+            form.SkippedFramesPeriodNumeric.Value = 45;
+            Assert.AreEqual(45, callbackPeriod);
+            Assert.AreEqual(45, settings.SkippedFramesPeriodSeconds);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
     private sealed class MockAudioMonitor : IAudioMonitor
     {
         public bool IsMonitoring { get; private set; }
@@ -1890,14 +1976,78 @@ public sealed class ClientOverlayAndSettingsTests
         public event Action<double, double>? AudioMeterUpdated;
 #pragma warning restore CS0067
 
+        public bool IsAudioSourceInCurrentScene { get; set; } = true;
+        public int SkippedFramesPeriodSeconds { get; set; } = 5;
+
         public void Start() { }
         public void Stop() { }
         public void UpdateConfig(string host, int port, string? password, int retryTimeoutSeconds, int skippedFramesThreshold, string? audioDeviceName) { }
+        public void UpdateConfig(string host, int port, string? password, int retryTimeoutSeconds, int skippedFramesThreshold, string? audioDeviceName, int skippedFramesPeriodSeconds) { }
         public void ConnectAsync(string host, int port, string? password) { }
         public void DisconnectAsync() { }
         public void SetAudioInputName(string? name) { }
         public void SetSkippedFramesThreshold(int threshold) { }
+        public void SetSkippedFramesPeriod(int seconds) => SkippedFramesPeriodSeconds = seconds;
+        public void TriggerStatusUpdated() => StatusUpdated?.Invoke();
         public void Dispose() { }
+    }
+
+    [TestMethod]
+    public void ClientTrayApplicationContext_SinglePc_NotInActiveScene_SuppressesObsSoundCaptureIssue()
+    {
+        var tempFolder = TestDirectory.Create("ClientSceneAudioSuppressionTest");
+
+        try
+        {
+            var settings = new ClientSettings
+            {
+                Mode = ClientMode.SinglePc,
+                IsPaused = false,
+                ObsIp = "127.0.0.1",
+                ObsAudioDevice = "Game Audio",
+                GameAudioMonitoringEnabled = false
+            };
+            using var listener = new UdpListener(13993);
+            var mockAudio = new MockAudioMonitor();
+            var assetManager = new OverlayAssetManager();
+            using var overlay = new OverlayForm(settings, assetManager);
+            var mockObs = new MockObsMonitor();
+            mockObs.IsAudioSourceInCurrentScene = true;
+
+            var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);
+            var correlationEngine = new AudioCorrelationEngine(silenceDetector: silenceDetector);
+
+            using var context = new ClientTrayApplicationContext(
+                settings,
+                listener,
+                mockAudio,
+                assetManager,
+                overlay,
+                mockObs,
+                correlationEngine);
+
+            // Feed reading triggering sound issue
+            correlationEngine.ProcessClientReading(-20.0);
+            mockObs.TriggerStatusUpdated();
+
+            Assert.IsTrue((context.LastAlerts & AlertFlags.ObsSoundCaptureIssue) != 0, "Sound issue alert should be present when source is in active scene");
+
+            // Now scene changes and audio source is NOT in current scene
+            mockObs.IsAudioSourceInCurrentScene = false;
+            mockObs.TriggerStatusUpdated();
+
+            Assert.IsFalse((context.LastAlerts & AlertFlags.ObsSoundCaptureIssue) != 0, "Sound issue alert should be suppressed when source is NOT in active scene");
+
+            // Scene changes back to scene with audio source
+            mockObs.IsAudioSourceInCurrentScene = true;
+            mockObs.TriggerStatusUpdated();
+
+            Assert.IsTrue((context.LastAlerts & AlertFlags.ObsSoundCaptureIssue) != 0, "Sound issue alert should restore when source returns to active scene");
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
     }
 }
 

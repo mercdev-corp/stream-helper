@@ -50,7 +50,15 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
         AudioCorrelationEngine? correlationEngine = null,
         ClientAudioTelemetrySender? telemetrySender = null)
     {
-        _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        if (SynchronizationContext.Current == null)
+        {
+            _syncContext = new WindowsFormsSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(_syncContext);
+        }
+        else
+        {
+            _syncContext = SynchronizationContext.Current;
+        }
         _settings = settings ?? ClientSettings.Load();
         _assetManager = assetManager ?? new OverlayAssetManager();
         _overlayForm = overlayForm ?? new OverlayForm(_settings, _assetManager);
@@ -167,6 +175,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
     internal NotifyIcon TrayIcon => _trayIcon;
     internal ContextMenuStrip ContextMenu => _contextMenu;
     internal ToolStripMenuItem MenuDonate => _menuDonate;
+    internal AlertFlags? LastAlerts => _lastAlerts;
 
     private void PostToUiThread(Action action)
     {
@@ -206,6 +215,8 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
 
             if (!string.IsNullOrEmpty(_settings.ObsIp))
             {
+                _obsMonitor.SetSkippedFramesThreshold(_settings.SkippedFramesThreshold);
+                _obsMonitor.SetSkippedFramesPeriod(_settings.SkippedFramesPeriodSeconds);
                 _obsMonitor.ConnectAsync(_settings.ObsIp, _settings.ObsPort, _settings.ObsPassword);
                 if (!string.IsNullOrEmpty(_settings.ObsAudioDevice))
                 {
@@ -321,8 +332,14 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
             bool micMuted = _audioMonitor.IsMuted;
             bool obsAudioDisconnected = _obsMonitor.IsAudioSourceMissing;
             bool obsAudioMuted = _obsMonitor.IsAudioSourceMuted;
+            bool isNotInActiveScene = !_obsMonitor.IsAudioSourceInCurrentScene;
 
-            _correlationEngine.UpdateSuppressionStates(obsAudioDisconnected, obsAudioMuted);
+            _correlationEngine.UpdateSuppressionStates(obsAudioDisconnected, obsAudioMuted, isNotInActiveScene);
+
+            if (isNotInActiveScene && _correlationEngine.HasSoundIssue)
+            {
+                AppLogger.Debug($"[Client] Sound issue alert suppressed because capture source '{_settings.ObsAudioDevice}' is not present in active scene.");
+            }
 
             if (micDisconnected) alerts |= AlertFlags.MicDisconnected;
             else if (micMuted) alerts |= AlertFlags.MicMuted;
@@ -336,7 +353,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
 
                 if (obsAudioDisconnected) alerts |= AlertFlags.ObsCaptureDeviceDisconnected;
                 else if (obsAudioMuted) alerts |= AlertFlags.ObsCaptureDeviceMuted;
-                else if (_correlationEngine.HasSoundIssue) alerts |= AlertFlags.ObsSoundCaptureIssue;
+                else if (!isNotInActiveScene && _correlationEngine.HasSoundIssue) alerts |= AlertFlags.ObsSoundCaptureIssue;
             }
 
             if (_settings.GameAudioMonitoringEnabled)
@@ -362,7 +379,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
 
             if (_lastAlerts != alerts)
             {
-                AppLogger.Info($"[Client-SinglePC] Alert state changed: [{_lastAlerts}] -> [{alerts}] (MicDisconnected={micDisconnected}, MicMuted={micMuted}, ObsState={_obsMonitor.ConnectionState}, ObsNet={_obsMonitor.HasNetworkCongestion}, ObsRender={_obsMonitor.HasRenderLag || _obsMonitor.HasEncodingLag}, ObsAudioMissing={obsAudioDisconnected}, ObsAudioMuted={obsAudioMuted}, SoundIssue={_correlationEngine.HasSoundIssue}, GameAudioMissing={_telemetrySender.IsDeviceMissing})");
+                AppLogger.Info($"[Client-SinglePC] Alert state changed: [{_lastAlerts}] -> [{alerts}] (MicDisconnected={micDisconnected}, MicMuted={micMuted}, ObsState={_obsMonitor.ConnectionState}, ObsNet={_obsMonitor.HasNetworkCongestion}, ObsRender={_obsMonitor.HasRenderLag || _obsMonitor.HasEncodingLag}, ObsAudioMissing={obsAudioDisconnected}, ObsAudioMuted={obsAudioMuted}, NotInActiveScene={isNotInActiveScene}, SoundIssue={_correlationEngine.HasSoundIssue}, GameAudioMissing={_telemetrySender.IsDeviceMissing})");
                 _lastAlerts = alerts;
             }
             else
@@ -526,6 +543,15 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
                     if (_activeMode == ClientMode.SinglePc)
                     {
                         _correlationEngine.Configure(tolerance, simpleMode);
+                        UpdateAllStates();
+                    }
+                },
+                onSkippedFramesPeriodChanged: period =>
+                {
+                    AppLogger.Info($"[Client] Skipped frames period changed callback triggered: {period}s");
+                    if (_activeMode == ClientMode.SinglePc)
+                    {
+                        _obsMonitor.SetSkippedFramesPeriod(period);
                         UpdateAllStates();
                     }
                 });

@@ -14,7 +14,7 @@ namespace StreamHelper.Server.UI;
 public sealed class ServerSettingsForm : Form
 {
     private readonly ServerSettings _settings;
-    private readonly IAudioMonitor _audioMonitor;
+    private readonly IAudioMonitor? _audioMonitor;
     private readonly IObsMonitor? _obsMonitor;
     private readonly Action<int> _onPortChanged;
     private readonly Action<string?> _onMicrophoneChanged;
@@ -23,6 +23,7 @@ public sealed class ServerSettingsForm : Form
     private readonly Action<string?>? _onObsAudioDeviceChanged;
     private readonly Action<int>? _onSkippedFramesThresholdChanged;
     private readonly Action<double, bool>? _onAudioDetectionConfigChanged;
+    private readonly Action<int>? _onSkippedFramesPeriodChanged;
 
     private CheckBox _chkStartup = null!;
     private CheckBox _chkDebugLogging = null!;
@@ -31,7 +32,10 @@ public sealed class ServerSettingsForm : Form
     private TextBox _txtObsPort = null!;
     private TextBox _txtObsPassword = null!;
     private CheckBox _chkShowPassword = null!;
+    private Label _lblSkippedFrames = null!;
     private NumericUpDown _numSkippedFrames = null!;
+    private Label _lblSkippedPeriod = null!;
+    private NumericUpDown _numSkippedPeriod = null!;
     private ComboBox _cboObsAudio = null!;
     private CheckBox _chkSimpleAudioDetection = null!;
     private TrackBar _trkAudioMatchTolerance = null!;
@@ -55,7 +59,10 @@ public sealed class ServerSettingsForm : Form
     internal TextBox ObsIpTextBox => _txtObsIp;
     internal TextBox ObsPortTextBox => _txtObsPort;
     internal TextBox ObsPasswordTextBox => _txtObsPassword;
+    internal Label SkippedFramesLabel => _lblSkippedFrames;
     internal NumericUpDown SkippedFramesNumeric => _numSkippedFrames;
+    internal Label SkippedFramesPeriodLabel => _lblSkippedPeriod;
+    internal NumericUpDown SkippedFramesPeriodNumeric => _numSkippedPeriod;
     internal TextBox PortTextBox => _txtPort;
     internal NumericUpDown TimeoutNumeric => _numTimeout;
 
@@ -69,7 +76,8 @@ public sealed class ServerSettingsForm : Form
         Action<string, int, string>? onObsConfigChanged = null,
         Action<string?>? onObsAudioDeviceChanged = null,
         Action<int>? onSkippedFramesThresholdChanged = null,
-        Action<double, bool>? onAudioDetectionConfigChanged = null)
+        Action<double, bool>? onAudioDetectionConfigChanged = null,
+        Action<int>? onSkippedFramesPeriodChanged = null)
     {
         _settings = settings;
         _audioMonitor = audioMonitor ?? new WindowsAudioMonitor();
@@ -81,6 +89,7 @@ public sealed class ServerSettingsForm : Form
         _onObsAudioDeviceChanged = onObsAudioDeviceChanged;
         _onSkippedFramesThresholdChanged = onSkippedFramesThresholdChanged;
         _onAudioDetectionConfigChanged = onAudioDetectionConfigChanged;
+        _onSkippedFramesPeriodChanged = onSkippedFramesPeriodChanged;
 
         InitializeComponent();
         LoadSettingsIntoControls();
@@ -137,7 +146,7 @@ public sealed class ServerSettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(420, 505);
+        ClientSize = new Size(420, 560);
         ShowInTaskbar = true;
 
         _toolTip = new ToolTip();
@@ -171,7 +180,7 @@ public sealed class ServerSettingsForm : Form
             Width = 380,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        _micController = new MicrophoneSelectionController(_cboMicrophone, _audioMonitor, item =>
+        _micController = new MicrophoneSelectionController(_cboMicrophone, _audioMonitor!, item =>
         {
             AppLogger.Info($"[ServerSettingsForm] Microphone selected: '{item.DisplayName}' ({item.Id})");
             _settings.MicrophoneId = item.Id;
@@ -243,9 +252,9 @@ public sealed class ServerSettingsForm : Form
             _txtObsPassword.UseSystemPasswordChar = !_chkShowPassword.Checked;
         };
 
-        var lblSkippedFrames = new Label
+        _lblSkippedFrames = new Label
         {
-            Text = "Skipped frames threshold (per min):",
+            Text = "Skipped frames threshold:",
             Location = new Point(20, 180),
             AutoSize = true
         };
@@ -259,15 +268,31 @@ public sealed class ServerSettingsForm : Form
         };
         _numSkippedFrames.ValueChanged += NumSkippedFrames_ValueChanged;
 
+        _lblSkippedPeriod = new Label
+        {
+            Text = "Evaluation period (seconds):",
+            Location = new Point(20, 235),
+            AutoSize = true
+        };
+        _numSkippedPeriod = new NumericUpDown
+        {
+            Location = new Point(20, 257),
+            Width = 100,
+            Minimum = 1,
+            Maximum = 300,
+            Value = Math.Clamp(_settings.SkippedFramesPeriodSeconds, 1, 300)
+        };
+        _numSkippedPeriod.ValueChanged += NumSkippedPeriod_ValueChanged;
+
         var lblObsAudio = new Label
         {
             Text = "OBS Game Audio Capture Source:",
-            Location = new Point(20, 235),
+            Location = new Point(20, 290),
             AutoSize = true
         };
         _cboObsAudio = new ComboBox
         {
-            Location = new Point(20, 258),
+            Location = new Point(20, 313),
             Width = 380,
             DropDownStyle = ComboBoxStyle.DropDownList,
             DrawMode = DrawMode.OwnerDrawFixed,
@@ -279,27 +304,27 @@ public sealed class ServerSettingsForm : Form
         _chkSimpleAudioDetection = new CheckBox
         {
             Text = "Simple audio issue detection",
-            Location = new Point(20, 288),
+            Location = new Point(20, 343),
             AutoSize = true
         };
 
         var lblAudioTolerance = new Label
         {
             Text = "Audio match tolerance:",
-            Location = new Point(20, 314),
+            Location = new Point(20, 369),
             AutoSize = true
         };
 
         _lblAudioMatchToleranceValue = new Label
         {
-            Location = new Point(220, 314),
+            Location = new Point(220, 369),
             Width = 60,
             Text = $"{_settings.AudioMatchToleranceDb} dB"
         };
 
         _trkAudioMatchTolerance = new TrackBar
         {
-            Location = new Point(20, 340),
+            Location = new Point(20, 395),
             Width = 380,
             Minimum = 0,
             Maximum = 40,
@@ -311,12 +336,12 @@ public sealed class ServerSettingsForm : Form
         var lblPort = new Label
         {
             Text = "Broadcast Port:",
-            Location = new Point(20, 390),
+            Location = new Point(20, 445),
             AutoSize = true
         };
         _txtPort = new TextBox
         {
-            Location = new Point(20, 413),
+            Location = new Point(20, 468),
             Width = 100,
             Text = _settings.Port.ToString()
         };
@@ -325,12 +350,12 @@ public sealed class ServerSettingsForm : Form
         var lblTimeout = new Label
         {
             Text = "Retry timeout (seconds):",
-            Location = new Point(140, 390),
+            Location = new Point(140, 445),
             AutoSize = true
         };
         _numTimeout = new NumericUpDown
         {
-            Location = new Point(140, 413),
+            Location = new Point(140, 468),
             Width = 100,
             Minimum = 1,
             Maximum = 300,
@@ -341,7 +366,7 @@ public sealed class ServerSettingsForm : Form
         _btnOpenLogs = new Button
         {
             Text = "View Logs...",
-            Location = new Point(20, 455),
+            Location = new Point(20, 510),
             Width = 100,
             Height = 30
         };
@@ -350,7 +375,7 @@ public sealed class ServerSettingsForm : Form
         _btnClose = new Button
         {
             Text = "Close",
-            Location = new Point(320, 455),
+            Location = new Point(320, 510),
             Width = 80,
             Height = 30
         };
@@ -359,7 +384,7 @@ public sealed class ServerSettingsForm : Form
         _lblVersion = new Label
         {
             Text = AppVersion.DisplayVersion,
-            Location = new Point(120, 455),
+            Location = new Point(120, 510),
             Size = new Size(200, 30),
             TextAlign = ContentAlignment.MiddleCenter,
             ForeColor = SystemColors.GrayText,
@@ -378,8 +403,10 @@ public sealed class ServerSettingsForm : Form
         Controls.Add(lblObsPassword);
         Controls.Add(_txtObsPassword);
         Controls.Add(_chkShowPassword);
-        Controls.Add(lblSkippedFrames);
+        Controls.Add(_lblSkippedFrames);
         Controls.Add(_numSkippedFrames);
+        Controls.Add(_lblSkippedPeriod);
+        Controls.Add(_numSkippedPeriod);
         Controls.Add(lblObsAudio);
         Controls.Add(_cboObsAudio);
         Controls.Add(_chkSimpleAudioDetection);
@@ -408,6 +435,7 @@ public sealed class ServerSettingsForm : Form
             _txtObsPort.Text = _settings.ObsPort.ToString();
             _txtObsPassword.Text = _settings.ObsPassword;
             _numSkippedFrames.Value = Math.Clamp(_settings.SkippedFramesThreshold, 1, 10000);
+            _numSkippedPeriod.Value = Math.Clamp(_settings.SkippedFramesPeriodSeconds, 1, 300);
 
             if (_audioDetectionController == null)
             {
@@ -689,6 +717,17 @@ public sealed class ServerSettingsForm : Form
         _settings.SkippedFramesThreshold = val;
         _settings.Save();
         _onSkippedFramesThresholdChanged?.Invoke(val);
+    }
+
+    private void NumSkippedPeriod_ValueChanged(object? sender, EventArgs e)
+    {
+        if (_isUpdatingControls) return;
+
+        int val = (int)_numSkippedPeriod.Value;
+        AppLogger.Info($"[ServerSettingsForm] Skipped frames evaluation period changed: {val}s");
+        _settings.SkippedFramesPeriodSeconds = val;
+        _settings.Save();
+        _onSkippedFramesPeriodChanged?.Invoke(val);
     }
 
     private void ChkStartup_CheckedChanged(object? sender, EventArgs e)

@@ -50,6 +50,8 @@ public sealed class ClientSettingsForm : Form
     private CheckBox _chkShowPassword = null!;
     private Label _lblSkipped = null!;
     private NumericUpDown _numSkippedFrames = null!;
+    private Label _lblSkippedPeriod = null!;
+    private NumericUpDown _numSkippedPeriod = null!;
     private Label _lblObsAudio = null!;
     private ComboBox _cboObsAudio = null!;
     private CheckBox _chkSimpleAudioDetection = null!;
@@ -84,6 +86,7 @@ public sealed class ClientSettingsForm : Form
     private bool _isUpdatingControls;
     private bool _isApplyingLayout;
     private readonly Action<double, bool>? _onAudioDetectionConfigChanged;
+    private readonly Action<int>? _onSkippedFramesPeriodChanged;
 
     internal Label VersionLabel => _lblVersion;
     internal ComboBox ModeComboBox => _cboMode;
@@ -102,6 +105,8 @@ public sealed class ClientSettingsForm : Form
     internal CheckBox GameAudioCheckBox => _chkGameAudio;
     internal Label SkippedFramesLabel => _lblSkipped;
     internal NumericUpDown SkippedFramesNumeric => _numSkippedFrames;
+    internal Label SkippedFramesPeriodLabel => _lblSkippedPeriod;
+    internal NumericUpDown SkippedFramesPeriodNumeric => _numSkippedPeriod;
     internal Label ObsAudioLabel => _lblObsAudio;
     internal ComboBox ObsAudioComboBox => _cboObsAudio;
     internal CheckBox SimpleAudioIssueDetectionCheckBox => _chkSimpleAudioDetection;
@@ -139,7 +144,8 @@ public sealed class ClientSettingsForm : Form
         Action<string?>? onObsAudioDeviceChanged = null,
         Action<int>? onSkippedFramesThresholdChanged = null,
         Action<bool, string?, string?>? onGameAudioChanged = null,
-        Action<double, bool>? onAudioDetectionConfigChanged = null)
+        Action<double, bool>? onAudioDetectionConfigChanged = null,
+        Action<int>? onSkippedFramesPeriodChanged = null)
     {
         _settings = settings;
         _udpListener = udpListener;
@@ -155,6 +161,7 @@ public sealed class ClientSettingsForm : Form
         _onSkippedFramesThresholdChanged = onSkippedFramesThresholdChanged;
         _onGameAudioChanged = onGameAudioChanged;
         _onAudioDetectionConfigChanged = onAudioDetectionConfigChanged;
+        _onSkippedFramesPeriodChanged = onSkippedFramesPeriodChanged;
 
         InitializeComponent();
         LoadSettingsIntoControls();
@@ -323,6 +330,10 @@ public sealed class ClientSettingsForm : Form
         _numSkippedFrames = new NumericUpDown { Location = new Point(20, 140), Width = 90, Minimum = 1, Maximum = 10000, Value = Math.Clamp(_settings.SkippedFramesThreshold, 1, 10000) };
         _numSkippedFrames.ValueChanged += NumSkippedFrames_ValueChanged;
 
+        _lblSkippedPeriod = new Label { Text = "Evaluation period (seconds):", Location = new Point(180, 120), AutoSize = true };
+        _numSkippedPeriod = new NumericUpDown { Location = new Point(180, 140), Width = 90, Minimum = 1, Maximum = 300, Value = Math.Clamp(_settings.SkippedFramesPeriodSeconds, 1, 300) };
+        _numSkippedPeriod.ValueChanged += NumSkippedPeriod_ValueChanged;
+
         _lblObsAudio = new Label { Text = "OBS Game Audio Source:", Location = new Point(20, 172), AutoSize = true };
         _cboObsAudio = new ComboBox { Location = new Point(20, 194), Width = 380, DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 22 };
         _cboObsAudio.DrawItem += (s, e) => MicrophoneSelectionController.DrawItem(_cboObsAudio, e);
@@ -371,6 +382,8 @@ public sealed class ClientSettingsForm : Form
         _pnlSinglePc.Controls.Add(_chkShowPassword);
         _pnlSinglePc.Controls.Add(_lblSkipped);
         _pnlSinglePc.Controls.Add(_numSkippedFrames);
+        _pnlSinglePc.Controls.Add(_lblSkippedPeriod);
+        _pnlSinglePc.Controls.Add(_numSkippedPeriod);
         _pnlSinglePc.Controls.Add(_lblObsAudio);
         _pnlSinglePc.Controls.Add(_cboObsAudio);
         _pnlSinglePc.Controls.Add(_chkSimpleAudioDetection);
@@ -714,6 +727,7 @@ public sealed class ClientSettingsForm : Form
             _txtObsPort.Text = _settings.ObsPort.ToString();
             _txtObsPassword.Text = _settings.ObsPassword;
             _numSkippedFrames.Value = Math.Clamp(_settings.SkippedFramesThreshold, 1, 10000);
+            _numSkippedPeriod.Value = Math.Clamp(_settings.SkippedFramesPeriodSeconds, 1, 300);
 
             if (_audioDetectionController == null)
             {
@@ -1027,6 +1041,17 @@ public sealed class ClientSettingsForm : Form
         _settings.SkippedFramesThreshold = val;
         _settings.Save();
         _onSkippedFramesThresholdChanged?.Invoke(val);
+    }
+
+    private void NumSkippedPeriod_ValueChanged(object? sender, EventArgs e)
+    {
+        if (_isUpdatingControls) return;
+
+        int val = (int)_numSkippedPeriod.Value;
+        AppLogger.Info($"[ClientSettingsForm] Skipped frames evaluation period changed: {val}s");
+        _settings.SkippedFramesPeriodSeconds = val;
+        _settings.Save();
+        _onSkippedFramesPeriodChanged?.Invoke(val);
     }
 
     private void OnDiscoveredServersUpdated()

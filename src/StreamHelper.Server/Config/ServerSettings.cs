@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using StreamHelper.Shared.Common;
+using StreamHelper.Shared.Obs;
 using StreamHelper.Shared.Protocol;
 
 namespace StreamHelper.Server.Config;
@@ -25,7 +26,8 @@ public sealed class ServerSettings
     public string ObsIp { get; set; } = "127.0.0.1";
     public int ObsPort { get; set; } = 4455;
     public string ObsPassword { get; set; } = string.Empty;
-    public int SkippedFramesThreshold { get; set; } = 60;
+    public int SkippedFramesThreshold { get; set; } = ObsSettingsConstants.DefaultSkippedFramesThreshold;
+    public int SkippedFramesPeriodSeconds { get; set; } = ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds;
     public string? ObsAudioDevice { get; set; }
     public double AudioMatchToleranceDb { get; set; } = 20;
     public bool SimpleAudioIssueDetection { get; set; }
@@ -49,10 +51,18 @@ public sealed class ServerSettings
                 {
                     if (settings.Port is < 1 or > 65535) settings.Port = ProtocolConstants.DefaultPort;
                     if (settings.RetryTimeout < 1) settings.RetryTimeout = ProtocolConstants.DefaultRetryTimeoutSeconds;
+                    settings.SkippedFramesThreshold = Math.Clamp(
+                        settings.SkippedFramesThreshold < ObsSettingsConstants.MinSkippedFramesThreshold ? ObsSettingsConstants.DefaultSkippedFramesThreshold : settings.SkippedFramesThreshold,
+                        ObsSettingsConstants.MinSkippedFramesThreshold,
+                        ObsSettingsConstants.MaxSkippedFramesThreshold);
+                    settings.SkippedFramesPeriodSeconds = Math.Clamp(
+                        settings.SkippedFramesPeriodSeconds <= 0 ? ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds : settings.SkippedFramesPeriodSeconds,
+                        ObsSettingsConstants.MinSkippedFramesPeriodSeconds,
+                        ObsSettingsConstants.MaxSkippedFramesPeriodSeconds);
                     settings.AudioMatchToleranceDb = Math.Clamp(settings.AudioMatchToleranceDb, 0, 40);
                     if (settings.DebugLogging) AppLogger.IsDebugEnabled = true;
                     AppLogger.Info($"[ServerSettings] Loaded server settings from '{path}'.");
-                    AppLogger.Debug($"[ServerSettings] Port={settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}, AudioMatchToleranceDb={settings.AudioMatchToleranceDb}, SimpleAudioIssueDetection={settings.SimpleAudioIssueDetection}");
+                    AppLogger.Debug($"[ServerSettings] Port={settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}, SkippedFramesPeriod={settings.SkippedFramesPeriodSeconds}s, AudioMatchToleranceDb={settings.AudioMatchToleranceDb}, SimpleAudioIssueDetection={settings.SimpleAudioIssueDetection}");
                     return settings;
                 }
             }
@@ -83,7 +93,7 @@ public sealed class ServerSettings
             var json = JsonSerializer.Serialize(this, ServerSettingsJsonContext.Default.ServerSettings);
             File.WriteAllText(path, json);
             AppLogger.Info($"[ServerSettings] Saved server settings to '{path}'.");
-            AppLogger.Debug($"[ServerSettings] Port={Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}, AudioMatchToleranceDb={AudioMatchToleranceDb}, SimpleAudioIssueDetection={SimpleAudioIssueDetection}");
+            AppLogger.Debug($"[ServerSettings] Port={Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}, SkippedFramesPeriod={SkippedFramesPeriodSeconds}s, AudioMatchToleranceDb={AudioMatchToleranceDb}, SimpleAudioIssueDetection={SimpleAudioIssueDetection}");
         }
         catch (Exception ex)
         {

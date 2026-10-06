@@ -23,6 +23,8 @@ public interface IObsMonitor : IDisposable
     bool HasRenderIssue { get; }
     bool IsCaptureDeviceDisconnected { get; }
     bool IsCaptureDeviceMuted { get; }
+    bool IsAudioSourceInCurrentScene => true;
+    int SkippedFramesPeriodSeconds => ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds;
     IReadOnlyList<string> AvailableAudioInputs { get; }
 
     ObsConnectionState ConnectionState { get; }
@@ -50,10 +52,21 @@ public interface IObsMonitor : IDisposable
         string? password,
         int retryTimeoutSeconds,
         int skippedFramesThreshold,
+        string? audioDeviceName,
+        int skippedFramesPeriodSeconds)
+        => UpdateConfig(host, port, password, retryTimeoutSeconds, skippedFramesThreshold, audioDeviceName);
+
+    void UpdateConfig(
+        string host,
+        int port,
+        string? password,
+        int retryTimeoutSeconds,
+        int skippedFramesThreshold,
         string? audioDeviceName);
 
     void ConnectAsync(string host, int port, string? password);
     void DisconnectAsync();
     void SetAudioInputName(string? name);
     void SetSkippedFramesThreshold(int threshold);
+    void SetSkippedFramesPeriod(int seconds) { }
 }

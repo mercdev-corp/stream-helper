@@ -2,7 +2,7 @@ namespace StreamHelper.Shared.Obs;
 
 public sealed class RollingFrameCounter
 {
-    private readonly TimeSpan _window;
+    private TimeSpan _window;
     private readonly TimeSpan _hysteresis;
     private readonly Queue<(DateTime Timestamp, long TotalSkipped)> _samples = new();
     private DateTime? _belowThresholdSince;
@@ -11,10 +11,25 @@ public sealed class RollingFrameCounter
     public bool IsAlertActive => _isAlertActive;
     public long CurrentDelta { get; private set; }
 
+    public TimeSpan Window
+    {
+        get => _window;
+        set => SetWindow(value);
+    }
+
     public RollingFrameCounter(TimeSpan? window = null, TimeSpan? hysteresis = null)
     {
-        _window = window ?? TimeSpan.FromSeconds(60);
+        _window = window ?? TimeSpan.FromSeconds(ObsSettingsConstants.DefaultSkippedFramesPeriodSeconds);
         _hysteresis = hysteresis ?? TimeSpan.FromSeconds(5);
+    }
+
+    public void SetWindow(TimeSpan window)
+    {
+        if (window <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(window), "Window must be positive.");
+        }
+        _window = window;
     }
 
     public bool Update(long currentTotalSkipped, int threshold, DateTime now, bool isOutputActive)
