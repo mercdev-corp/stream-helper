@@ -20,6 +20,7 @@ public sealed class AudioCorrelationEngine
 
     private bool _simpleDetection;
     private double _toleranceDb = 20.0;
+    private double _lagWindowSeconds = 1.0;
 
     private bool _hasSoundIssue;
 
@@ -55,32 +56,48 @@ public sealed class AudioCorrelationEngine
         get { lock (_lock) return _toleranceDb; }
     }
 
+    public double LagWindowSeconds
+    {
+        get { lock (_lock) return _lagWindowSeconds; }
+    }
+
     public event Action<bool>? SoundIssueChanged;
 
     public AudioCorrelationEngine(
         ConditionalSilenceDetector? silenceDetector = null,
         PearsonCorrelationEngine? correlationEngine = null,
         double toleranceDb = 20.0,
-        bool simpleMode = false)
+        bool simpleMode = false,
+        double lagWindowSeconds = 1.0)
     {
         _silenceDetector = silenceDetector ?? new ConditionalSilenceDetector();
         _correlationEngine = correlationEngine ?? new PearsonCorrelationEngine(toleranceDb: toleranceDb);
         _toleranceDb = Math.Clamp(correlationEngine != null && toleranceDb == 20.0 ? correlationEngine.ToleranceDb : toleranceDb, 0, 40);
         _correlationEngine.ToleranceDb = _toleranceDb;
         _simpleDetection = simpleMode;
+        _lagWindowSeconds = Math.Clamp(lagWindowSeconds, 0.0, 3.0);
+        _correlationEngine.SetLagWindow(_lagWindowSeconds);
     }
 
     public void Configure(double toleranceDb, bool simpleMode)
     {
+        Configure(toleranceDb, simpleMode, _lagWindowSeconds);
+    }
+
+    public void Configure(double toleranceDb, bool simpleMode, double lagWindowSeconds)
+    {
         bool modeChanged = false;
         bool toleranceChanged = false;
+        bool lagChanged = false;
         double oldTolerance;
         bool oldMode;
+        double oldLag;
 
         lock (_lock)
         {
             oldTolerance = _toleranceDb;
             oldMode = _simpleDetection;
+            oldLag = _lagWindowSeconds;
 
             double clampedTolerance = Math.Clamp(toleranceDb, 0, 40);
             if (Math.Abs(_toleranceDb - clampedTolerance) > 1e-4)
@@ -88,6 +105,14 @@ public sealed class AudioCorrelationEngine
                 _toleranceDb = clampedTolerance;
                 _correlationEngine.ToleranceDb = clampedTolerance;
                 toleranceChanged = true;
+            }
+
+            double clampedLag = Math.Clamp(lagWindowSeconds, 0.0, 3.0);
+            if (Math.Abs(_lagWindowSeconds - clampedLag) > 1e-4)
+            {
+                _lagWindowSeconds = clampedLag;
+                _correlationEngine.SetLagWindow(_lagWindowSeconds);
+                lagChanged = true;
             }
 
             if (_simpleDetection != simpleMode)
@@ -101,6 +126,11 @@ public sealed class AudioCorrelationEngine
         if (toleranceChanged)
         {
             AppLogger.Info($"[AudioCorrelation] Tolerance changed from {oldTolerance:F1} dB to {_toleranceDb:F1} dB.");
+        }
+
+        if (lagChanged)
+        {
+            AppLogger.Info($"[AudioCorrelation] LagWindowSeconds changed from {oldLag:F1}s to {_lagWindowSeconds:F1}s.");
         }
 
         if (modeChanged)
@@ -186,17 +216,24 @@ public sealed class AudioCorrelationEngine
     }
 
     // Direct in-memory feed for Single-PC mode (called per 100ms reading)
-    public void ProcessClientReading(double clientRmsDbfs)
+    public void ProcessClientReading(double clientRmsDbfs, long? sampleTimeMs = null)
     {
-        double obsRms = GetCurrentObsRms();
+        long timeMs = sampleTimeMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        double obsSilenceRms;
+        double obsCorrRms;
+        lock (_lock)
+        {
+            obsSilenceRms = ResolveObsRmsForSilenceDetection(timeMs);
+            obsCorrRms = ResolveObsRmsAtTime(timeMs);
+        }
 
-        _silenceDetector.ProcessReading(clientRmsDbfs, obsRms);
+        _silenceDetector.ProcessReading(clientRmsDbfs, obsSilenceRms);
 
         lock (_lock)
         {
             if (!_simpleDetection)
             {
-                _correlationEngine.AddSamples(clientRmsDbfs, obsRms);
+                _correlationEngine.AddSamples(clientRmsDbfs, obsCorrRms);
             }
         }
 
@@ -225,12 +262,13 @@ public sealed class AudioCorrelationEngine
                 double reading = packet.Readings[i];
                 long sampleTimeMs = baseTimeMs - (long)((count - 1 - i) * 100);
 
-                double obsRms = ResolveObsRmsAtTime(sampleTimeMs);
+                double obsSilenceRms = ResolveObsRmsForSilenceDetection(sampleTimeMs);
+                double obsCorrRms = ResolveObsRmsAtTime(sampleTimeMs);
 
-                _silenceDetector.ProcessReading(reading, obsRms);
+                _silenceDetector.ProcessReading(reading, obsSilenceRms);
                 if (!_simpleDetection)
                 {
-                    _correlationEngine.AddSamples(reading, obsRms);
+                    _correlationEngine.AddSamples(reading, obsCorrRms);
                 }
             }
         }
@@ -238,17 +276,74 @@ public sealed class AudioCorrelationEngine
         EvaluateSoundIssue();
     }
 
-    private double ResolveObsRmsAtTime(long sampleTimeMs)
+    private double ResolveObsRmsForSilenceDetection(long sampleTimeMs)
     {
+        if (_lastObsMeterTime == DateTime.MinValue || (DateTime.UtcNow - _lastObsMeterTime) > TimeSpan.FromMilliseconds(1500))
+        {
+            return -100.0;
+        }
+
         if (_obsMeterHistory.Count == 0)
         {
             return GetCurrentObsRms();
         }
 
-        int bestIdx = -1;
-        long bestDiff = long.MaxValue;
+        // Check OBS reading at sampleTimeMs
+        double currentObsRms = ResolveObsRmsAtTime(sampleTimeMs);
+        if (currentObsRms >= _silenceDetector.ObsSilenceThresholdDbfs)
+        {
+            return currentObsRms;
+        }
 
-        for (int j = _obsMeterHistory.Count - 1; j >= 0; j--)
+        long lagWindowMs = (long)Math.Round(_lagWindowSeconds * 1000);
+        if (lagWindowMs <= 0)
+        {
+            return currentObsRms;
+        }
+
+        long windowEndMs = sampleTimeMs + lagWindowMs;
+
+        // Search forward across (sampleTimeMs, sampleTimeMs + lagWindow]
+        double maxRmsInWindow = currentObsRms;
+        for (int i = _obsMeterHistory.Count - 1; i >= 0; i--)
+        {
+            var (ts, rms) = _obsMeterHistory[i];
+            if (ts > sampleTimeMs && ts <= windowEndMs)
+            {
+                if (rms > maxRmsInWindow)
+                {
+                    maxRmsInWindow = rms;
+                }
+                if (rms >= _silenceDetector.ObsSilenceThresholdDbfs)
+                {
+                    return rms;
+                }
+            }
+            if (ts <= sampleTimeMs)
+            {
+                break;
+            }
+        }
+
+        return maxRmsInWindow;
+    }
+
+    private double ResolveObsRmsAtTime(long sampleTimeMs)
+    {
+        if (_lastObsMeterTime == DateTime.MinValue || (DateTime.UtcNow - _lastObsMeterTime) > TimeSpan.FromMilliseconds(1500))
+        {
+            return -100.0;
+        }
+
+        if (_obsMeterHistory.Count == 0)
+        {
+            return GetCurrentObsRms();
+        }
+
+        int bestIdx = _obsMeterHistory.Count - 1;
+        long bestDiff = Math.Abs(_obsMeterHistory[bestIdx].TimestampMs - sampleTimeMs);
+
+        for (int j = _obsMeterHistory.Count - 2; j >= 0; j--)
         {
             long diff = Math.Abs(_obsMeterHistory[j].TimestampMs - sampleTimeMs);
             if (diff < bestDiff)
@@ -268,13 +363,7 @@ public sealed class AudioCorrelationEngine
             return _obsMeterHistory[bestIdx].RmsDbfs;
         }
 
-        // If OBS is currently active but nearest history sample is slightly beyond window, return latest
-        if (_lastObsMeterTime != DateTime.MinValue && (DateTime.UtcNow - _lastObsMeterTime) <= TimeSpan.FromMilliseconds(1500))
-        {
-            return _latestObsRmsDbfs;
-        }
-
-        return -100.0;
+        return _latestObsRmsDbfs;
     }
 
     private void EvaluateSoundIssue()
@@ -298,7 +387,22 @@ public sealed class AudioCorrelationEngine
         bool silenceIssue = _silenceDetector.IsAlertActive;
         bool correlationIssue = !simpleMode && _correlationEngine.IsAlertActive;
 
-        HasSoundIssue = silenceIssue || correlationIssue;
+        if (simpleMode)
+        {
+            HasSoundIssue = silenceIssue;
+        }
+        else
+        {
+            // Full mode: verified correlation suppresses spurious silence alerts
+            if (_correlationEngine.HasValidCalculation &&
+                (_correlationEngine.LastCalculatedMaxCorrelation >= _correlationEngine.MinCorrelationThreshold ||
+                 _correlationEngine.LastCalculatedDifference <= _correlationEngine.ToleranceDb))
+            {
+                silenceIssue = false;
+            }
+
+            HasSoundIssue = silenceIssue || correlationIssue;
+        }
     }
 
     public void Reset()

@@ -12,10 +12,12 @@ public sealed class ConditionalSilenceDetector
     private bool _isAlertActive;
 
     public bool IsAlertActive => _isAlertActive;
+    public double ClientActiveThresholdDbfs => _clientActiveThresholdDbfs;
+    public double ObsSilenceThresholdDbfs => _obsSilenceThresholdDbfs;
 
     public ConditionalSilenceDetector(
         double clientActiveThresholdDbfs = -48.0,
-        double obsSilenceThresholdDbfs = -48.0,
+        double obsSilenceThresholdDbfs = -60.0,
         int consecutiveReadingsRequired = 30) // 30 * 100ms = 3.0 seconds
     {
         _clientActiveThresholdDbfs = clientActiveThresholdDbfs;

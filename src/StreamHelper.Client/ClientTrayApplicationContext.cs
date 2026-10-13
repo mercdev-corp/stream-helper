@@ -209,7 +209,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
 
         if (_activeMode == ClientMode.SinglePc)
         {
-            _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection);
+            _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection, _settings.AudioLagWindowSeconds);
             _udpListener.Stop();
             _audioMonitor.StartMonitoring(_settings.MicrophoneId, _settings.RetryTimeout);
 
@@ -495,6 +495,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
                     if (_activeMode == ClientMode.SinglePc)
                     {
                         _obsMonitor.SetAudioInputName(dev);
+                        _correlationEngine.Reset();
                         UpdateAllStates();
                     }
                 },
@@ -542,7 +543,16 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
                     AppLogger.Info($"[Client] Audio detection config changed callback triggered: tolerance={tolerance:F1} dB, simpleMode={simpleMode}");
                     if (_activeMode == ClientMode.SinglePc)
                     {
-                        _correlationEngine.Configure(tolerance, simpleMode);
+                        _correlationEngine.Configure(tolerance, simpleMode, _settings.AudioLagWindowSeconds);
+                        UpdateAllStates();
+                    }
+                },
+                onAudioDetectionConfigChangedWithLag: (tolerance, simpleMode, lagWindow) =>
+                {
+                    AppLogger.Info($"[Client] Audio detection config changed callback triggered: tolerance={tolerance:F1} dB, simpleMode={simpleMode}, lagWindow={lagWindow:F1}s");
+                    if (_activeMode == ClientMode.SinglePc)
+                    {
+                        _correlationEngine.Configure(tolerance, simpleMode, lagWindow);
                         UpdateAllStates();
                     }
                 },

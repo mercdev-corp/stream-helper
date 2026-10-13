@@ -152,24 +152,56 @@ The server settings dialog SHALL provide controls for configuring the OBS Studio
 - **THEN** the missing device is rendered as the first item with red strikethrough styling, followed by all available OBS audio inputs
 
 ### Requirement: Audio Issue Detection Controls
-The server settings dialog SHALL provide, directly below the OBS game audio capture source dropdown and in this order from top to bottom, a `Simple audio issue detection` switch and an audio match tolerance slider (labelled in dB, range 0 to 40, default 20). Both values SHALL be persisted in `stream-helper-server-settings.json` and applied live.
+The server settings dialog SHALL provide, directly below the OBS game audio capture source dropdown and in this order from top to bottom:
+1. An audio lag compensation window slider (labelled in seconds, range 0.0s to 3.0s, default 1.0s, step 0.1s)
+2. `Simple audio issue detection` switch
+3. An audio match tolerance slider (labelled in dB, range 0 to 40, default 20)
+
+All three values SHALL be persisted in `stream-helper-server-settings.json` and applied live to the correlation engine. When `Simple audio issue detection` is enabled, the audio lag compensation slider SHALL remain enabled and active, while the audio match tolerance slider SHALL be disabled.
 
 #### Scenario: Control order and placement
 - **WHEN** the server settings dialog is opened
-- **THEN** the `Simple audio issue detection` switch appears below the OBS audio capture dropdown and the tolerance slider appears below the switch, with no controls overlapping and 20 pixel right margin preserved
+- **THEN** the audio lag compensation slider appears below the OBS audio capture dropdown, the `Simple audio issue detection` switch appears below the lag compensation slider, and the tolerance slider appears below the switch, with 20 pixel right margin preserved
 
 #### Scenario: Enabling simple detection disables the slider
 - **WHEN** the user turns on `Simple audio issue detection`
-- **THEN** the slider becomes disabled (grayed out) and is displayed at its maximum position, while the saved tolerance value in settings remains unchanged
+- **THEN** the tolerance slider becomes disabled (grayed out) and is displayed at its maximum position, while the saved tolerance value in settings remains unchanged and the audio lag compensation slider remains enabled
 
 #### Scenario: Disabling simple detection restores the slider
 - **WHEN** the user turns off `Simple audio issue detection`
-- **THEN** the slider is enabled and returns to the previously saved tolerance value
+- **THEN** the tolerance slider is enabled and returns to the previously saved tolerance value
 
 #### Scenario: Settings reopened with simple detection on
 - **WHEN** the dialog opens with simple detection saved as enabled
-- **THEN** the slider is shown disabled at its maximum position and the saved tolerance value is still preserved in the settings file
+- **THEN** the tolerance slider is shown disabled at its maximum position, the saved tolerance value is preserved in settings, and the lag compensation slider is shown enabled with its saved value
 
 #### Scenario: Slider adjusted
-- **WHEN** the user moves the enabled slider
+- **WHEN** the user moves the enabled tolerance slider
 - **THEN** the new tolerance is saved immediately, its current dB value is shown in the label, and it is applied to the audio engine without restart
+
+#### Scenario: Lag compensation slider active in simple mode
+- **WHEN** the user enables `Simple audio issue detection`
+- **THEN** the audio lag compensation slider remains enabled and adjustable, while the tolerance slider becomes disabled
+
+#### Scenario: Lag compensation slider adjusted
+- **WHEN** the user moves the audio lag compensation slider
+- **THEN** the new lag window is saved immediately, its current value is displayed in seconds, and it is applied to the audio correlation engine without restart
+
+### Requirement: Settings Window Position Persistence and Restoration
+The server settings dialog SHALL persist its on-screen window coordinates in `stream-helper-server-settings.json` whenever the window is moved, and restore its position to those saved coordinates upon being reopened within the same session or across application restarts. If no saved coordinates exist or if the saved coordinates place the window entirely outside the visible bounds of any active display screen, the settings window SHALL fall back to a visible position centered on the primary display screen.
+
+#### Scenario: Settings window moved saves position immediately
+- **WHEN** the user moves the server settings dialog on the screen
+- **THEN** the updated window coordinates (X and Y) are saved immediately to `stream-helper-server-settings.json`
+
+#### Scenario: Settings window reopened restores last position
+- **WHEN** the user closes the server settings dialog and reopens it during the same application run
+- **THEN** the settings window opens at the last saved coordinates instead of resetting to the screen center
+
+#### Scenario: Settings window restores position across application restarts
+- **WHEN** the server application is restarted and the user opens the settings dialog
+- **THEN** the settings window reads the persisted coordinates from `stream-helper-server-settings.json` and opens at that exact position
+
+#### Scenario: Off-screen coordinates fallback to visible area
+- **WHEN** the settings dialog is opened and its saved coordinates are outside the visible work area of all connected monitors
+- **THEN** the settings window falls back to being centered on the active or primary display screen so that it remains fully visible to the user

@@ -52,6 +52,9 @@ public sealed class ClientSettings
     public string? ObsAudioDevice { get; set; }
     public double AudioMatchToleranceDb { get; set; } = 20;
     public bool SimpleAudioIssueDetection { get; set; }
+    public double AudioLagWindowSeconds { get; set; } = 1.0;
+    public int? SettingsWindowX { get; set; }
+    public int? SettingsWindowY { get; set; }
 
     [JsonIgnore]
     public string? SettingsDirectory { get; set; }
@@ -90,9 +93,10 @@ public sealed class ClientSettings
                         ObsSettingsConstants.MinSkippedFramesPeriodSeconds,
                         ObsSettingsConstants.MaxSkippedFramesPeriodSeconds);
                     settings.AudioMatchToleranceDb = Math.Clamp(settings.AudioMatchToleranceDb, 0, 40);
+                    settings.AudioLagWindowSeconds = Math.Clamp(settings.AudioLagWindowSeconds, 0.0, 3.0);
                     if (settings.DebugLogging) AppLogger.IsDebugEnabled = true;
                     AppLogger.Info($"[ClientSettings] Loaded client settings from '{path}'.");
-                    AppLogger.Debug($"[ClientSettings] Mode={settings.Mode}, ServerIp={settings.ServerIp}:{settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}, SkippedFramesPeriod={settings.SkippedFramesPeriodSeconds}s, GameAudio={settings.GameAudioMonitoringEnabled} ('{settings.GameAudioOutputDeviceName}'), Cycles={settings.AnimationCycles}, AudioMatchToleranceDb={settings.AudioMatchToleranceDb}, SimpleAudioIssueDetection={settings.SimpleAudioIssueDetection}");
+                    AppLogger.Debug($"[ClientSettings] Mode={settings.Mode}, ServerIp={settings.ServerIp}:{settings.Port}, Mic='{settings.MicrophoneName}', ObsIp={settings.ObsIp}:{settings.ObsPort}, DebugLogging={settings.DebugLogging}, RunOnStartup={settings.RunOnStartup}, SkippedFrames={settings.SkippedFramesThreshold}, SkippedFramesPeriod={settings.SkippedFramesPeriodSeconds}s, GameAudio={settings.GameAudioMonitoringEnabled} ('{settings.GameAudioOutputDeviceName}'), Cycles={settings.AnimationCycles}, AudioMatchToleranceDb={settings.AudioMatchToleranceDb}, SimpleAudioIssueDetection={settings.SimpleAudioIssueDetection}, AudioLagWindowSeconds={settings.AudioLagWindowSeconds}s, WindowPos=({settings.SettingsWindowX},{settings.SettingsWindowY})");
                     return settings;
                 }
             }
@@ -128,7 +132,7 @@ public sealed class ClientSettings
             var json = JsonSerializer.Serialize(this, ClientSettingsJsonContext.Default.ClientSettings);
             File.WriteAllText(path, json);
             AppLogger.Info($"[ClientSettings] Saved client settings to '{path}'.");
-            AppLogger.Debug($"[ClientSettings] Mode={Mode}, ServerIp={ServerIp}:{Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}, SkippedFramesPeriod={SkippedFramesPeriodSeconds}s, GameAudio={GameAudioMonitoringEnabled} ('{GameAudioOutputDeviceName}'), Overlay=({OverlayCenterX},{OverlayCenterY},{OverlayWidth}x{OverlayHeight}, Opacity={Opacity}%, Freq={PulseFrequency}s, Cycles={AnimationCycles}), AudioMatchToleranceDb={AudioMatchToleranceDb}, SimpleAudioIssueDetection={SimpleAudioIssueDetection}");
+            AppLogger.Debug($"[ClientSettings] Mode={Mode}, ServerIp={ServerIp}:{Port}, Mic='{MicrophoneName}', ObsIp={ObsIp}:{ObsPort}, DebugLogging={DebugLogging}, RunOnStartup={RunOnStartup}, SkippedFrames={SkippedFramesThreshold}, SkippedFramesPeriod={SkippedFramesPeriodSeconds}s, GameAudio={GameAudioMonitoringEnabled} ('{GameAudioOutputDeviceName}'), Overlay=({OverlayCenterX},{OverlayCenterY},{OverlayWidth}x{OverlayHeight}, Opacity={Opacity}%, Freq={PulseFrequency}s, Cycles={AnimationCycles}), AudioMatchToleranceDb={AudioMatchToleranceDb}, SimpleAudioIssueDetection={SimpleAudioIssueDetection}, AudioLagWindowSeconds={AudioLagWindowSeconds}s, WindowPos=({SettingsWindowX},{SettingsWindowY})");
         }
         catch (Exception ex)
         {
