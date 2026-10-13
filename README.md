@@ -171,7 +171,17 @@ Input fields to set the threshold of skipped frames (due to rendering lag, encod
 
 ##### Game audio capture device selection
 
-Dropdown list of available audio capture devices from OBS Studio. Shows the currently saved device from settings. Updates settings on selection change. If the selected device is currently unavailable in OBS or OBS is not running, it is shown as the first item with red strikethrough text, followed by all available devices. If not changed manually, it remains preserved in settings despite not being found.
+Dropdown list of available audio capture devices from OBS Studio. Shows the currently saved device from settings. Updates settings on selection change. If the selected device is currently unavailable in OBS or OBS is not running, it is shown as the first item with red strikethrough text, followed by all available devices. If not changed manually, it remains preserved in settings despite not being found. Selecting or changing the capture device immediately resets the correlation engine history and clears any active sound issue alerts. Changes are saved to settings and applied immediately.
+
+##### Audio lag compensation window
+
+Defaults to `1.0` second (adjustable between `0.0`s and `3.0`s in `0.1`s increments).
+
+Slider with a real-time value label that sets the forward search window $[T, T + \text{lagWindow}]$ when evaluating OBS audio meters for silence detection. Compensates for OBS audio buffering, filter chains (noise suppression, compressors), and capture pipeline latency:
+- When game audio is actively playing at time $T$, the engine checks for non-silent OBS audio across $[T, T + \text{lagWindow}]$ before flagging a silence alert, eliminating false alarms caused by delay between the game and OBS.
+- Dynamically scales Pearson cross-correlation lag steps to search the full configured lag window duration.
+- Remains active and applies to both **Simple audio issue detection** and **Full cross-correlation** modes.
+- Changes are applied live to the monitoring engine and saved immediately to settings.
 
 ##### Simple audio issue detection
 
@@ -185,7 +195,7 @@ Checkbox to toggle simplified game audio verification mode (default: disabled / 
 
 Defaults to `20 dB` (adjustable between `0 dB` and `40 dB` in 5 dB increments).
 
-Slider with a real-time dB label that sets the mean absolute RMS difference allowed between the gaming PC output and OBS capture at the best correlation lag. If Pearson correlation drops below threshold ($r < 0.5$) due to volume level offsets, compression, or downmixing, but the average volume difference remains within this tolerance, false alarms are prevented. A mismatch alert is only raised when correlation is low *and* volume difference exceeds this tolerance.
+Slider with a real-time dB label that sets the mean absolute RMS difference allowed between the gaming PC output and OBS capture at the best correlation lag. If Pearson correlation drops below threshold ($r < 0.5$) due to volume level offsets, compression, or downmixing, but the average volume difference remains within this tolerance, false alarms are prevented. A mismatch alert is only raised when correlation is low *and* volume difference exceeds this tolerance. Changes are saved to settings and applied immediately.
 
 ##### Retry timeout
 
@@ -230,6 +240,7 @@ The server monitors the selected microphone's status (subscribing to audio endpo
 The server monitors the audio capture status of the target device in OBS and broadcasts status updates to connected clients according to the following rules:
 - If the audio capture device is not found in OBS (or not yet selected), the server displays the `device disconnected` status icon in the system tray and broadcasts `device disconnected` to all connected clients until the device becomes available. The server checks if the audio capture device becomes available periodically according to the retry timeout setting (hover tooltip: `OBS capture device disconnected`).
 - If the audio capture device is found and muted, the server broadcasts `sound muted` status to all connected clients and displays the `sound muted` status icon in the system tray (hover tooltip: `OBS capture device muted`).
+- Changing or selecting the OBS Game Audio Capture Source immediately resets historical audio meters and clears active sound issue alerts.
 
 In addition to basic audio capture statuses, the server also monitors and compares an **RMS Envelope Correlation** between the game audio output and the audio captured by OBS:
 
@@ -241,13 +252,14 @@ In addition to basic audio capture statuses, the server also monitors and compar
 3. **On the OBS Side:** OBS WebSocket v5 natively provides the `InputVolumeMeters` event subscription (`EventSubscription::InputVolumeMeters`). OBS periodically emits current volume levels (peak and RMS) for each configured audio input without requiring custom audio capture plugins.
 4. **Comparison & Anomaly Detection:**
   * **Conditional Silence Detector (covers ~95% of real-world failures):**
-    * If the Gaming PC detects active audio (`RMS > -45 dBFS`) continuously for 3–5 seconds while the corresponding audio source in OBS remains below the ambient noise threshold (`RMS < -60 dBFS`) or is muted, the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
+    * If the Gaming PC detects active audio (`RMS > -48.0 dBFS`) continuously for 3–5 seconds while the corresponding audio source in OBS remains below the silence threshold (`RMS < -60.0 dBFS`) across the forward lag compensation window $[T, T + \text{lagWindow}]$, the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
+    * The restored 12 dB hysteresis gap (`-48.0 dBFS` active vs `-60.0 dBFS` silence) prevents false positives during quiet ambient gameplay scenes, dialogue with low master volume, or scenes where OBS capture is moderately attenuated relative to system output.
     * If the game itself is quiet (e.g., loading screens, pause menus, stealth sequences), the condition is not met, preventing false positives.
   * **Cross-Correlation & Audio Match Tolerance:**
     * To verify that the audio captured by OBS actually matches the game output, maintain a rolling time-series window (e.g., 10 seconds / 100 samples at 100ms resolution).
-    * Calculate Pearson's correlation coefficient between the Gaming PC and OBS RMS series across an expected lag range (e.g., 0 to 500 ms in 100 ms steps), and evaluate the mean absolute RMS difference at the best lag.
-    * If the audio on the Gaming PC exhibits significant dynamic variation (high RMS variance) while correlation remains low ($r < 0.5$) **and** the mean absolute difference exceeds the configured **Audio match tolerance** (default `20 dB`, range `0`–`40 dB`), the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
-    * If **Simple audio issue detection** is enabled, Pearson cross-correlation is completely bypassed/reset, and anomaly detection relies solely on the Conditional Silence Detector.
+    * Calculate Pearson's correlation coefficient between the Gaming PC and OBS RMS series across the dynamically scaled lag range (up to the configured **Audio lag compensation window**, e.g., 0 to 3.0 seconds in 100 ms steps), and evaluate the mean absolute RMS difference at the best lag.
+    * If the audio on the Gaming PC exhibits significant dynamic variation (high RMS variance) while correlation remains low ($r < 0.5$) **and** the mean absolute difference exceeds the configured **Audio match tolerance** (default `20 dB`, range `0`–`40 dB`), the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover. Verified strong correlation ($r \ge 0.5$) suppresses spurious silence alerts in full mode.
+    * If **Simple audio issue detection** is enabled, Pearson cross-correlation is completely bypassed/reset, and anomaly detection relies solely on the Conditional Silence Detector with lag compensation.
 
 ##### OBS stats monitoring
 
@@ -316,6 +328,8 @@ When the settings dialog is opened, the overlay enters WYSIWYG edit mode (displa
 Each change to the overlay position (geometric center) and dimensions is saved and applied immediately. Resized versions of status images displayed by the overlay (such as `microphone muted`, `server disconnected`, OBS issues, audio capture alerts, etc.) are pre-rendered and cached to disk on save to ensure zero CPU/GPU overhead during runtime.
 
 Settings options:
+
+In **Single-PC mode**, the client embeds all Server-side OBS monitoring, skipped frame thresholds, Game audio capture source selection, **Audio lag compensation window**, **Simple audio issue detection**, and **Audio match tolerance** controls directly in the Single PC panel, saving and applying all adjustments immediately without requiring the separate Server executable.
 
 ##### Run on startup
 

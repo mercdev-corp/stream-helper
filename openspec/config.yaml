@@ -1,13 +1,10 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+# Project context
+context: |
+  Tech stack: .NET 10 Windows Forms (StreamHelper.Server, StreamHelper.Client, StreamHelper.Shared)
+  Architecture & Core Requirements:
+  - Immediate Persistence & Live Application: All settings in settings forms/dialogs (trackbars, checkboxes, dropdowns, numeric up/downs, text inputs) must be saved to settings and applied immediately to the active running services, monitors, and engines upon user interaction (no separate "Apply" or "Save" button).
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.

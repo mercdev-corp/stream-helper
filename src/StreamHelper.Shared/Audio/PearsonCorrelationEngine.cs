@@ -6,7 +6,7 @@ public sealed class PearsonCorrelationEngine
 {
     private readonly int _windowSize; // 120 samples (12 seconds at 100ms)
     private readonly int _minLagSteps; // -5 steps (-500ms for network/clock lead)
-    private readonly int _maxLagSteps; // 25 steps (up to 2500ms for HDMI / Realtek stereo mix delay)
+    private int _maxLagSteps; // scaled based on lag window (e.g. 10 steps for 1.0s, 30 for 3.0s)
     private readonly double _varianceThreshold; // 5.0 dB
     private readonly double _minCorrelationThreshold; // 0.5
     private readonly int _consecutiveLowCorrCountRequired; // 50 samples (5.0s)
@@ -17,6 +17,10 @@ public sealed class PearsonCorrelationEngine
     private bool _isAlertActive;
 
     public bool IsAlertActive => _isAlertActive;
+    public int MaxLagSteps => _maxLagSteps;
+    public int MinLagSteps => _minLagSteps;
+    public double MinCorrelationThreshold => _minCorrelationThreshold;
+    public bool HasValidCalculation { get; private set; }
     public double LastCalculatedMaxCorrelation { get; private set; }
     public double LastClientVariance { get; private set; }
     public double LastCalculatedDifference { get; private set; }
@@ -26,6 +30,11 @@ public sealed class PearsonCorrelationEngine
     {
         get => _toleranceDb;
         set => _toleranceDb = Math.Clamp(value, 0, 40);
+    }
+
+    public void SetLagWindow(double lagWindowSeconds)
+    {
+        _maxLagSteps = Math.Max(5, (int)Math.Ceiling(Math.Clamp(lagWindowSeconds, 0.0, 3.0) * 10));
     }
 
     public PearsonCorrelationEngine(
@@ -108,6 +117,7 @@ public sealed class PearsonCorrelationEngine
         LastCalculatedMaxCorrelation = maxR;
         double meanDiff = CalculateLaggedMeanAbsoluteDifference(clientArr, obsArr, bestLag);
         LastCalculatedDifference = meanDiff;
+        HasValidCalculation = true;
 
         if (maxR < _minCorrelationThreshold && meanDiff > ToleranceDb)
         {
@@ -152,6 +162,7 @@ public sealed class PearsonCorrelationEngine
         _obsSamples.Clear();
         _consecutiveLowCorrCount = 0;
         _isAlertActive = false;
+        HasValidCalculation = false;
         LastCalculatedMaxCorrelation = 0;
         LastCalculatedDifference = 0;
         LastClientVariance = 0;

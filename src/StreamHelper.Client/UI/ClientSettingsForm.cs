@@ -55,6 +55,9 @@ public sealed class ClientSettingsForm : Form
     private Label _lblObsAudio = null!;
     private ComboBox _cboObsAudio = null!;
     private CheckBox _chkSimpleAudioDetection = null!;
+    private Label _lblAudioLagWindow = null!;
+    private Label _lblAudioLagWindowVal = null!;
+    private TrackBar _trkAudioLagWindow = null!;
     private TrackBar _trkAudioMatchTolerance = null!;
     private Label _lblAudioMatchToleranceVal = null!;
     private AudioDetectionSettingsController _audioDetectionController = null!;
@@ -85,8 +88,12 @@ public sealed class ClientSettingsForm : Form
     private ToolTip _toolTip = null!;
     private bool _isUpdatingControls;
     private bool _isApplyingLayout;
+    private bool _isLoaded;
     private readonly Action<double, bool>? _onAudioDetectionConfigChanged;
+    private readonly Action<double, bool, double>? _onAudioDetectionConfigChangedWithLag;
     private readonly Action<int>? _onSkippedFramesPeriodChanged;
+
+    internal void MarkLoadedForTesting() => _isLoaded = true;
 
     internal Label VersionLabel => _lblVersion;
     internal ComboBox ModeComboBox => _cboMode;
@@ -110,6 +117,8 @@ public sealed class ClientSettingsForm : Form
     internal Label ObsAudioLabel => _lblObsAudio;
     internal ComboBox ObsAudioComboBox => _cboObsAudio;
     internal CheckBox SimpleAudioIssueDetectionCheckBox => _chkSimpleAudioDetection;
+    internal TrackBar AudioLagWindowTrackBar => _trkAudioLagWindow;
+    internal Label AudioLagWindowValueLabel => _lblAudioLagWindowVal;
     internal TrackBar AudioMatchToleranceTrackBar => _trkAudioMatchTolerance;
     internal Label AudioMatchToleranceValueLabel => _lblAudioMatchToleranceVal;
     internal TrackBar AnimationCyclesTrackBar => _trkAnimationCycles;
@@ -145,7 +154,8 @@ public sealed class ClientSettingsForm : Form
         Action<int>? onSkippedFramesThresholdChanged = null,
         Action<bool, string?, string?>? onGameAudioChanged = null,
         Action<double, bool>? onAudioDetectionConfigChanged = null,
-        Action<int>? onSkippedFramesPeriodChanged = null)
+        Action<int>? onSkippedFramesPeriodChanged = null,
+        Action<double, bool, double>? onAudioDetectionConfigChangedWithLag = null)
     {
         _settings = settings;
         _udpListener = udpListener;
@@ -162,8 +172,10 @@ public sealed class ClientSettingsForm : Form
         _onGameAudioChanged = onGameAudioChanged;
         _onAudioDetectionConfigChanged = onAudioDetectionConfigChanged;
         _onSkippedFramesPeriodChanged = onSkippedFramesPeriodChanged;
+        _onAudioDetectionConfigChangedWithLag = onAudioDetectionConfigChangedWithLag;
 
         InitializeComponent();
+        WindowPositionHelper.RestorePosition(this, _settings.SettingsWindowX, _settings.SettingsWindowY);
         LoadSettingsIntoControls();
 
         // Synchronize size slider when overlay is resized via mouse drag or scroll wheel
@@ -278,7 +290,7 @@ public sealed class ClientSettingsForm : Form
         _pnlSinglePc = new Panel
         {
             Location = new Point(0, 85),
-            Size = new Size(420, 336)
+            Size = new Size(420, 404)
         };
 
         _lblMicrophone = new Label
@@ -307,7 +319,6 @@ public sealed class ClientSettingsForm : Form
         {
             Text = "OBS WebSocket Connection:",
             Location = new Point(20, 50),
-            Font = new Font(Font, FontStyle.Bold),
             AutoSize = true
         };
 
@@ -339,30 +350,54 @@ public sealed class ClientSettingsForm : Form
         _cboObsAudio.DrawItem += (s, e) => MicrophoneSelectionController.DrawItem(_cboObsAudio, e);
         _cboObsAudio.SelectedIndexChanged += CboObsAudio_SelectedIndexChanged;
 
+        _lblAudioLagWindow = new Label
+        {
+            Text = "Audio lag compensation window:",
+            Location = new Point(20, 226),
+            AutoSize = true
+        };
+
+        _lblAudioLagWindowVal = new Label
+        {
+            Location = new Point(260, 226),
+            AutoSize = true,
+            Text = $"{_settings.AudioLagWindowSeconds:F1} s"
+        };
+
+        _trkAudioLagWindow = new TrackBar
+        {
+            Location = new Point(20, 248),
+            Width = 380,
+            Minimum = 0,
+            Maximum = 30,
+            TickFrequency = 5,
+            Value = Math.Clamp((int)Math.Round(_settings.AudioLagWindowSeconds * 10), 0, 30)
+        };
+
         _chkSimpleAudioDetection = new CheckBox
         {
             Text = "Simple audio issue detection",
-            Location = new Point(20, 228),
+            Location = new Point(20, 298),
             AutoSize = true
         };
 
         var lblAudioTolerance = new Label
         {
             Text = "Audio match tolerance:",
-            Location = new Point(20, 254),
+            Location = new Point(20, 323),
             AutoSize = true
         };
 
         _lblAudioMatchToleranceVal = new Label
         {
-            Location = new Point(220, 254),
+            Location = new Point(220, 323),
             Width = 60,
             Text = $"{_settings.AudioMatchToleranceDb} dB"
         };
 
         _trkAudioMatchTolerance = new TrackBar
         {
-            Location = new Point(20, 280),
+            Location = new Point(20, 348),
             Width = 380,
             Minimum = 0,
             Maximum = 40,
@@ -387,6 +422,9 @@ public sealed class ClientSettingsForm : Form
         _pnlSinglePc.Controls.Add(_lblObsAudio);
         _pnlSinglePc.Controls.Add(_cboObsAudio);
         _pnlSinglePc.Controls.Add(_chkSimpleAudioDetection);
+        _pnlSinglePc.Controls.Add(_lblAudioLagWindow);
+        _pnlSinglePc.Controls.Add(_lblAudioLagWindowVal);
+        _pnlSinglePc.Controls.Add(_trkAudioLagWindow);
         _pnlSinglePc.Controls.Add(lblAudioTolerance);
         _pnlSinglePc.Controls.Add(_lblAudioMatchToleranceVal);
         _pnlSinglePc.Controls.Add(_trkAudioMatchTolerance);
@@ -606,6 +644,18 @@ public sealed class ClientSettingsForm : Form
     {
         base.OnLoad(e);
         ApplyTitleBarTheme();
+        _isLoaded = true;
+    }
+
+    protected override void OnLocationChanged(EventArgs e)
+    {
+        base.OnLocationChanged(e);
+        if (_isLoaded && WindowState == FormWindowState.Normal)
+        {
+            _settings.SettingsWindowX = Location.X;
+            _settings.SettingsWindowY = Location.Y;
+            _settings.Save();
+        }
     }
 
     private void ApplyTitleBarTheme()
@@ -735,8 +785,11 @@ public sealed class ClientSettingsForm : Form
                     _chkSimpleAudioDetection,
                     _trkAudioMatchTolerance,
                     _lblAudioMatchToleranceVal,
+                    _trkAudioLagWindow,
+                    _lblAudioLagWindowVal,
                     initialSimpleMode: _settings.SimpleAudioIssueDetection,
                     initialToleranceDb: _settings.AudioMatchToleranceDb,
+                    initialLagWindowSeconds: _settings.AudioLagWindowSeconds,
                     saveSimpleMode: simple =>
                     {
                         _settings.SimpleAudioIssueDetection = simple;
@@ -747,14 +800,23 @@ public sealed class ClientSettingsForm : Form
                         _settings.AudioMatchToleranceDb = tol;
                         _settings.Save();
                     },
+                    saveLagWindow: lag =>
+                    {
+                        _settings.AudioLagWindowSeconds = lag;
+                        _settings.Save();
+                    },
                     onChanged: (tol, simple) =>
                     {
                         _onAudioDetectionConfigChanged?.Invoke(tol, simple);
+                    },
+                    onChangedWithLag: (tol, simple, lag) =>
+                    {
+                        _onAudioDetectionConfigChangedWithLag?.Invoke(tol, simple, lag);
                     });
             }
             else
             {
-                _audioDetectionController.ApplyState(_settings.SimpleAudioIssueDetection, _settings.AudioMatchToleranceDb);
+                _audioDetectionController.ApplyState(_settings.SimpleAudioIssueDetection, _settings.AudioMatchToleranceDb, _settings.AudioLagWindowSeconds);
             }
 
             ApplyLayoutForMode(_settings.Mode);

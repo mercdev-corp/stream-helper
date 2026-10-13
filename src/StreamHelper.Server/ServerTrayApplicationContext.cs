@@ -58,7 +58,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
         _broadcaster = broadcaster ?? new UdpBroadcaster(_settings.Port);
         _audioMonitor = audioMonitor ?? new WindowsAudioMonitor();
         _correlationEngine = correlationEngine ?? new AudioCorrelationEngine();
-        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection);
+        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection, _settings.AudioLagWindowSeconds);
         _obsMonitor = obsMonitor ?? new ObsMonitor();
         _telemetryReceiver = telemetryReceiver ?? new AudioTelemetryReceiver(_correlationEngine, _settings.Port);
         _trayCycler = new TrayAlertCycler(_syncContext);
@@ -312,6 +312,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
                 {
                     AppLogger.Info($"[Server] OBS audio device changed callback triggered: '{dev}'");
                     _obsMonitor.SetAudioInputName(dev);
+                    _correlationEngine.Reset();
                     UpdateAllStates();
                 },
                 onSkippedFramesThresholdChanged: threshold =>
@@ -323,7 +324,13 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
                 onAudioDetectionConfigChanged: (tolerance, simpleMode) =>
                 {
                     AppLogger.Info($"[Server] Audio detection config changed callback triggered: tolerance={tolerance:F1} dB, simpleMode={simpleMode}");
-                    _correlationEngine.Configure(tolerance, simpleMode);
+                    _correlationEngine.Configure(tolerance, simpleMode, _settings.AudioLagWindowSeconds);
+                    UpdateAllStates();
+                },
+                onAudioDetectionConfigChangedWithLag: (tolerance, simpleMode, lagWindow) =>
+                {
+                    AppLogger.Info($"[Server] Audio detection config changed callback triggered: tolerance={tolerance:F1} dB, simpleMode={simpleMode}, lagWindow={lagWindow:F1}s");
+                    _correlationEngine.Configure(tolerance, simpleMode, lagWindow);
                     UpdateAllStates();
                 },
                 onSkippedFramesPeriodChanged: period =>

@@ -84,6 +84,30 @@ public sealed class AudioTelemetryAndCorrelationTests
     }
 
     [TestMethod]
+    public void ConditionalSilenceDetector_DefaultThresholds_RestoresHysteresisGapAndSuppressesLowVolumeScene()
+    {
+        var detector = new ConditionalSilenceDetector();
+        Assert.AreEqual(-48.0, detector.ClientActiveThresholdDbfs, 0.001);
+        Assert.AreEqual(-60.0, detector.ObsSilenceThresholdDbfs, 0.001);
+
+        // Low-volume scene: client active at -46.0 dBFS, OBS slightly attenuated at -52.0 dBFS
+        // Since -52.0 >= -60.0 dBFS, it should not trigger silence alert despite client being active
+        for (int i = 0; i < 40; i++)
+        {
+            Assert.IsFalse(detector.ProcessReading(-46.0, -52.0));
+        }
+        Assert.IsFalse(detector.IsAlertActive);
+
+        // True silence in OBS: OBS drops to -65.0 dBFS (< -60.0 dBFS)
+        for (int i = 0; i < 29; i++)
+        {
+            Assert.IsFalse(detector.ProcessReading(-46.0, -65.0));
+        }
+        Assert.IsTrue(detector.ProcessReading(-46.0, -65.0));
+        Assert.IsTrue(detector.IsAlertActive);
+    }
+
+    [TestMethod]
     public void PearsonCorrelationEngine_StaticCalculations_Accurate()
     {
         double[] x = { 1.0, 2.0, 3.0, 4.0, 5.0 };
@@ -504,13 +528,13 @@ public sealed class AudioTelemetryAndCorrelationTests
         }
         Assert.IsTrue(engine2.HasSoundIssue, "Scenario 2: Music with quiet dips in simple mode should trigger sound issue");
 
-        // Scenario 3: Music at -20 dBFS, OBS has noise floor at -55 dBFS, simple mode
+        // Scenario 3: Music at -20 dBFS, OBS has noise floor at -65 dBFS, simple mode
         var engine3 = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: true);
         for (int p = 1; p <= 10; p++)
         {
             var readings = new float[10];
             for (int i = 0; i < 10; i++) readings[i] = -20.0f;
-            engine3.IngestObsAudioMeter(-55.0, -50.0, DateTime.UtcNow);
+            engine3.IngestObsAudioMeter(-65.0, -60.0, DateTime.UtcNow);
             engine3.ProcessTelemetryPacket(new AudioTelemetryPacket
             {
                 SequenceNumber = (ulong)p,
@@ -518,16 +542,16 @@ public sealed class AudioTelemetryAndCorrelationTests
                 Readings = readings
             });
         }
-        Assert.IsTrue(engine3.HasSoundIssue, "Scenario 3: Music active with OBS noise floor -55dBFS in simple mode should trigger sound issue");
+        Assert.IsTrue(engine3.HasSoundIssue, "Scenario 3: Music active with OBS noise floor -65dBFS in simple mode should trigger sound issue");
 
-        // Scenario 4: Music at -20 dBFS, OBS has noise floor at -55 dBFS, normal mode with tolerance 20
+        // Scenario 4: Music at -20 dBFS, OBS has noise floor at -65 dBFS, normal mode with tolerance 20
         var engine4 = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: false);
         var rnd = new Random(123);
         for (int p = 1; p <= 10; p++)
         {
             var readings = new float[10];
             for (int i = 0; i < 10; i++) readings[i] = (float)(-25.0 + rnd.NextDouble() * 15.0);
-            engine4.IngestObsAudioMeter(-55.0, -50.0, DateTime.UtcNow);
+            engine4.IngestObsAudioMeter(-65.0, -60.0, DateTime.UtcNow);
             engine4.ProcessTelemetryPacket(new AudioTelemetryPacket
             {
                 SequenceNumber = (ulong)p,
@@ -535,7 +559,7 @@ public sealed class AudioTelemetryAndCorrelationTests
                 Readings = readings
             });
         }
-        Assert.IsTrue(engine4.HasSoundIssue, "Scenario 4: Dynamic music with OBS noise -55dBFS in normal mode should trigger sound issue");
+        Assert.IsTrue(engine4.HasSoundIssue, "Scenario 4: Dynamic music with OBS noise -65dBFS in normal mode should trigger sound issue");
 
         // Scenario 5: Realistic music with speech/pauses, OBS silent (-100 dBFS), normal mode with ANY tolerance (0 to 40)
         for (int tol = 0; tol <= 40; tol += 10)
@@ -576,13 +600,13 @@ public sealed class AudioTelemetryAndCorrelationTests
         }
         Assert.IsTrue(engine6.HasSoundIssue, "Scenario 6: Low variance music, -100 OBS, normal mode tol=0 should trigger sound issue");
 
-        // Scenario 7: Low variance music, OBS noise floor at -55 dBFS, normal mode with tol=20
+        // Scenario 7: Low variance music, OBS noise floor at -65 dBFS, normal mode with tol=20
         var engine7 = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: false);
         for (int p = 1; p <= 10; p++)
         {
             var readings = new float[10];
             for (int i = 0; i < 10; i++) readings[i] = (float)(-20.0 + (i % 2 == 0 ? 1.0 : -1.0));
-            engine7.IngestObsAudioMeter(-55.0, -50.0, DateTime.UtcNow);
+            engine7.IngestObsAudioMeter(-65.0, -60.0, DateTime.UtcNow);
             engine7.ProcessTelemetryPacket(new AudioTelemetryPacket
             {
                 SequenceNumber = (ulong)p,
@@ -590,6 +614,128 @@ public sealed class AudioTelemetryAndCorrelationTests
                 Readings = readings
             });
         }
-        Assert.IsTrue(engine7.HasSoundIssue, "Scenario 7: Low variance music, OBS noise floor -55dBFS, normal mode tol=20 should trigger sound issue");
+        Assert.IsTrue(engine7.HasSoundIssue, "Scenario 7: Low variance music, OBS noise floor -65dBFS, normal mode tol=20 should trigger sound issue");
+    }
+
+    [TestMethod]
+    [DataRow(500)]
+    [DataRow(1000)]
+    [DataRow(1500)]
+    public void AudioCorrelationEngine_LagCompensation_DelaysBetween500msAnd1500ms_DualPc_SuppressesFalseSilenceAlerts(int delayMs)
+    {
+        // Lag compensation window configured to 2.0s
+        var engine = new AudioCorrelationEngine(toleranceDb: 10, simpleMode: true, lagWindowSeconds: 2.0);
+        var baseUtc = DateTime.UtcNow;
+        long baseTimeMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+
+        // At time T, OBS has silence (-100 dBFS); delayed active audio (-25 dBFS) arrives at T + delayMs
+        for (int step = 0; step < 60; step++)
+        {
+            engine.IngestObsAudioMeter(-100.0, -100.0, baseUtc.AddMilliseconds(step * 100));
+            engine.IngestObsAudioMeter(-25.0, -20.0, baseUtc.AddMilliseconds(step * 100 + delayMs));
+        }
+
+        // Process 40 client telemetry packets (4 seconds of continuous active audio at -25.0 dBFS)
+        for (int p = 1; p <= 40; p++)
+        {
+            var readings = new float[] { -25.0f };
+            long packetTimestamp = baseTimeMs + (p * 100);
+
+            engine.ProcessTelemetryPacket(new AudioTelemetryPacket
+            {
+                SequenceNumber = (ulong)p,
+                TimestampUnixMs = packetTimestamp,
+                Readings = readings
+            });
+
+            Assert.IsFalse(engine.HasSoundIssue, $"Should not trigger sound issue at packet {p} with delay {delayMs}ms");
+        }
+    }
+
+    [TestMethod]
+    [DataRow(500)]
+    [DataRow(1000)]
+    [DataRow(1500)]
+    public void AudioCorrelationEngine_LagCompensation_DelaysBetween500msAnd1500ms_SinglePc_SuppressesFalseSilenceAlerts(int delayMs)
+    {
+        // Single-PC direct reading feed with lag compensation window 2.0s
+        var engine = new AudioCorrelationEngine(toleranceDb: 10, simpleMode: true, lagWindowSeconds: 2.0);
+        var baseUtc = DateTime.UtcNow;
+        long baseTimeMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+
+        // At time T, OBS has silence (-100 dBFS); delayed active audio arrives at T + delayMs
+        for (int step = 0; step < 60; step++)
+        {
+            engine.IngestObsAudioMeter(-100.0, -100.0, baseUtc.AddMilliseconds(step * 100));
+            engine.IngestObsAudioMeter(-25.0, -20.0, baseUtc.AddMilliseconds(step * 100 + delayMs));
+        }
+
+        // Process 40 client readings (4 seconds)
+        for (int step = 1; step <= 40; step++)
+        {
+            long sampleTime = baseTimeMs + (step * 100);
+            engine.ProcessClientReading(-25.0, sampleTime);
+            Assert.IsFalse(engine.HasSoundIssue, $"Should not trigger sound issue at step {step} with delay {delayMs}ms");
+        }
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_WithoutLagCompensation_DelayedObsAudio_TriggersSilenceAlert()
+    {
+        // When lag compensation window is 0.0s (disabled), delayed OBS audio does not match client time T
+        var engine = new AudioCorrelationEngine(toleranceDb: 10, simpleMode: true, lagWindowSeconds: 0.0);
+        var baseUtc = DateTime.UtcNow;
+        long baseTimeMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+
+        // At time T, OBS is silent (-100 dBFS); delayed active audio arrives at T + 1000ms
+        for (int step = 0; step < 60; step++)
+        {
+            engine.IngestObsAudioMeter(-100.0, -100.0, baseUtc.AddMilliseconds(step * 100));
+            engine.IngestObsAudioMeter(-25.0, -20.0, baseUtc.AddMilliseconds(step * 100 + 1000));
+        }
+
+        // Process 40 client readings (4 seconds)
+        for (int step = 1; step <= 40; step++)
+        {
+            long sampleTime = baseTimeMs + (step * 100);
+            engine.ProcessClientReading(-25.0, sampleTime);
+        }
+
+        // Without lag window, OBS at time T was silent (-100 dBFS), so silence detector triggered
+        Assert.IsTrue(engine.HasSoundIssue, "Without lag compensation, delayed OBS audio should trigger silence alert");
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_LowVolumeScene_ClientActiveVsObsAttenuated_NoFalseAlerts()
+    {
+        // Low-volume scene: client active at -46.0 dBFS (above -48.0 dBFS threshold),
+        // OBS attenuated at -50.0 dBFS (above -60.0 dBFS silence threshold)
+        // Simple mode test:
+        var simpleEngine = new AudioCorrelationEngine(toleranceDb: 10, simpleMode: true, lagWindowSeconds: 1.0);
+        var now = DateTime.UtcNow;
+        long baseMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        for (int step = 0; step < 40; step++)
+        {
+            simpleEngine.IngestObsAudioMeter(-50.0, -45.0, now.AddMilliseconds(step * 100));
+            simpleEngine.ProcessClientReading(-46.0, baseMs + (step * 100));
+        }
+
+        Assert.IsFalse(simpleEngine.HasSoundIssue, "Low-volume scene (-46 dBFS client vs -50 dBFS OBS) should not trigger silence alert in simple mode");
+
+        // Normal mode test with toleranceDb = 10 (difference is 4 dB <= 10 dB):
+        var normalEngine = new AudioCorrelationEngine(toleranceDb: 10, simpleMode: false, lagWindowSeconds: 1.0);
+        for (int p = 1; p <= 40; p++)
+        {
+            normalEngine.IngestObsAudioMeter(-50.0, -45.0, DateTime.UtcNow);
+            normalEngine.ProcessTelemetryPacket(new AudioTelemetryPacket
+            {
+                SequenceNumber = (ulong)p,
+                TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Readings = new float[] { -46.0f }
+            });
+        }
+
+        Assert.IsFalse(normalEngine.HasSoundIssue, "Low-volume scene (-46 dBFS client vs -50 dBFS OBS) should not trigger alert in normal mode");
     }
 }

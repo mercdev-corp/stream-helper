@@ -31,7 +31,9 @@ public sealed class ServerNetworkingAndSettingsTests
                 RetryTimeout = 8,
                 IsPaused = true,
                 DebugLogging = true,
-                SkippedFramesPeriodSeconds = 12
+                SkippedFramesPeriodSeconds = 12,
+                SettingsWindowX = 400,
+                SettingsWindowY = 250
             };
 
             original.Save(tempFolder);
@@ -48,6 +50,8 @@ public sealed class ServerNetworkingAndSettingsTests
             Assert.AreEqual(original.IsPaused, loaded.IsPaused);
             Assert.AreEqual(original.DebugLogging, loaded.DebugLogging);
             Assert.AreEqual(original.SkippedFramesPeriodSeconds, loaded.SkippedFramesPeriodSeconds);
+            Assert.AreEqual(original.SettingsWindowX, loaded.SettingsWindowX);
+            Assert.AreEqual(original.SettingsWindowY, loaded.SettingsWindowY);
         }
         finally
         {
@@ -96,17 +100,20 @@ public sealed class ServerNetworkingAndSettingsTests
             var def = new ServerSettings();
             Assert.AreEqual(20.0, def.AudioMatchToleranceDb);
             Assert.IsFalse(def.SimpleAudioIssueDetection);
+            Assert.AreEqual(1.0, def.AudioLagWindowSeconds);
 
             var custom = new ServerSettings
             {
                 AudioMatchToleranceDb = 12.0,
-                SimpleAudioIssueDetection = true
+                SimpleAudioIssueDetection = true,
+                AudioLagWindowSeconds = 2.5
             };
             custom.Save(tempFolder);
 
             var loaded = ServerSettings.Load(tempFolder);
             Assert.AreEqual(12.0, loaded.AudioMatchToleranceDb);
             Assert.IsTrue(loaded.SimpleAudioIssueDetection);
+            Assert.AreEqual(2.5, loaded.AudioLagWindowSeconds);
         }
         finally
         {
@@ -132,6 +139,29 @@ public sealed class ServerNetworkingAndSettingsTests
             var loadedMax = ServerSettings.Load(tempFolder);
             Assert.AreEqual(40.0, loadedMax.AudioMatchToleranceDb);
             Assert.IsFalse(loadedMax.SimpleAudioIssueDetection);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ServerSettings_Load_ClampsAudioLagWindowSeconds()
+    {
+        var tempFolder = TestDirectory.Create("ServerAudioLagClamp");
+        try
+        {
+            var filePath = ServerSettings.GetFilePath(tempFolder);
+            Directory.CreateDirectory(tempFolder);
+
+            File.WriteAllText(filePath, "{\"AudioLagWindowSeconds\": -1.0}");
+            var loadedMin = ServerSettings.Load(tempFolder);
+            Assert.AreEqual(0.0, loadedMin.AudioLagWindowSeconds);
+
+            File.WriteAllText(filePath, "{\"AudioLagWindowSeconds\": 5.5}");
+            var loadedMax = ServerSettings.Load(tempFolder);
+            Assert.AreEqual(3.0, loadedMax.AudioLagWindowSeconds);
         }
         finally
         {
@@ -254,10 +284,10 @@ public sealed class ServerNetworkingAndSettingsTests
         Assert.AreEqual(SystemColors.GrayText, form.VersionLabel.ForeColor);
         Assert.IsTrue(form.Controls.Contains(form.VersionLabel));
 
-        // Verify position is between left button (X=20, Width=100) and right button (X=320, Width=80) at Y=510
-        Assert.AreEqual(510, form.VersionLabel.Location.Y);
+        // Verify position is between left button (X=20, Width=100) and right button (X=300, Width=100) at Y=585
+        Assert.AreEqual(585, form.VersionLabel.Location.Y);
         Assert.IsGreaterThanOrEqualTo(form.VersionLabel.Location.X, 120);
-        Assert.IsLessThanOrEqualTo(form.VersionLabel.Right, 320);
+        Assert.IsLessThanOrEqualTo(form.VersionLabel.Right, 300);
     }
 
     [TestMethod]
@@ -296,21 +326,30 @@ public sealed class ServerNetworkingAndSettingsTests
 
         var obsCbo = form.ObsAudioComboBox;
         var simpleChk = form.SimpleAudioIssueDetectionCheckBox;
+        var lagBar = form.AudioLagWindowTrackBar;
+        var lagLbl = form.AudioLagWindowValueLabel;
         var toleranceBar = form.AudioMatchToleranceTrackBar;
         var toleranceLbl = form.AudioMatchToleranceValueLabel;
 
         Assert.IsNotNull(obsCbo);
         Assert.IsNotNull(simpleChk);
+        Assert.IsNotNull(lagBar);
+        Assert.IsNotNull(lagLbl);
         Assert.IsNotNull(toleranceBar);
         Assert.IsNotNull(toleranceLbl);
 
-        // Control order/placement: Switch and slider below OBS audio dropdown; switch above slider
-        Assert.IsTrue(simpleChk.Top >= obsCbo.Bottom, $"Simple checkbox (top={simpleChk.Top}) should be below OBS audio combo (bottom={obsCbo.Bottom})");
+        // Control order/placement:
+        // Lag slider below OBS combo; Switch below Lag slider; Tolerance slider below Switch
+        Assert.IsTrue(lagLbl.Top >= obsCbo.Bottom, $"Lag window label (top={lagLbl.Top}) should be below OBS audio combo (bottom={obsCbo.Bottom})");
+        Assert.IsTrue(lagBar.Top >= lagLbl.Bottom, $"Lag window trackbar (top={lagBar.Top}) should be below Lag window label (bottom={lagLbl.Bottom})");
+        Assert.IsTrue(simpleChk.Top >= lagBar.Bottom, $"Simple checkbox (top={simpleChk.Top}) should be below Lag window trackbar (bottom={lagBar.Bottom})");
         Assert.IsTrue(toleranceLbl.Top >= simpleChk.Bottom, $"Tolerance label (top={toleranceLbl.Top}) should be below Simple checkbox (bottom={simpleChk.Bottom})");
         Assert.IsTrue(toleranceBar.Top >= toleranceLbl.Bottom, $"Tolerance trackbar (top={toleranceBar.Top}) should be below Tolerance label (bottom={toleranceLbl.Bottom})");
 
         // 20px right margin
         Assert.IsTrue(simpleChk.Right <= form.ClientSize.Width - 20, $"Simple checkbox right ({simpleChk.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+        Assert.IsTrue(lagBar.Right <= form.ClientSize.Width - 20, $"Lag bar right ({lagBar.Right}) exceeds margin ({form.ClientSize.Width - 20})");
+        Assert.IsTrue(lagLbl.Right <= form.ClientSize.Width - 20, $"Lag label right ({lagLbl.Right}) exceeds margin ({form.ClientSize.Width - 20})");
         Assert.IsTrue(toleranceBar.Right <= form.ClientSize.Width - 20, $"Tolerance bar right ({toleranceBar.Right}) exceeds margin ({form.ClientSize.Width - 20})");
         Assert.IsTrue(toleranceLbl.Right <= form.ClientSize.Width - 20, $"Tolerance label right ({toleranceLbl.Right}) exceeds margin ({form.ClientSize.Width - 20})");
 
@@ -320,20 +359,38 @@ public sealed class ServerNetworkingAndSettingsTests
         Assert.AreEqual(15, toleranceBar.Value);
         Assert.AreEqual("15 dB", toleranceLbl.Text);
 
-        // Enable simple mode: slider disabled and set to 40 dB
+        Assert.IsTrue(lagBar.Enabled);
+        Assert.AreEqual(10, lagBar.Value);
+        Assert.AreEqual("1.0 s", lagLbl.Text);
+
+        // Interact with lag slider: change to 2.5s
+        lagBar.Value = 25;
+        Assert.AreEqual("2.5 s", lagLbl.Text);
+        Assert.AreEqual(2.5, settings.AudioLagWindowSeconds);
+
+        // Enable simple mode: tolerance slider disabled and set to 40 dB, lag slider remains enabled
         simpleChk.Checked = true;
         Assert.IsFalse(toleranceBar.Enabled);
         Assert.AreEqual(40, toleranceBar.Value);
         Assert.AreEqual("40 dB", toleranceLbl.Text);
         Assert.IsTrue(settings.SimpleAudioIssueDetection);
 
-        // Disable simple mode: slider enabled and restored to 15 dB
+        Assert.IsTrue(lagBar.Enabled, "Lag slider must remain enabled in simple mode");
+        Assert.AreEqual(25, lagBar.Value);
+        Assert.AreEqual("2.5 s", lagLbl.Text);
+
+        // Disable simple mode: tolerance slider enabled and restored to 15 dB, lag slider still enabled
         simpleChk.Checked = false;
         Assert.IsTrue(toleranceBar.Enabled);
         Assert.AreEqual(15, toleranceBar.Value);
         Assert.AreEqual("15 dB", toleranceLbl.Text);
         Assert.IsFalse(settings.SimpleAudioIssueDetection);
         Assert.AreEqual(15.0, settings.AudioMatchToleranceDb);
+
+        Assert.IsTrue(lagBar.Enabled);
+        Assert.AreEqual(25, lagBar.Value);
+        Assert.AreEqual("2.5 s", lagLbl.Text);
+        Assert.AreEqual(2.5, settings.AudioLagWindowSeconds);
     }
 
     [TestMethod]
@@ -817,6 +874,110 @@ public sealed class ServerNetworkingAndSettingsTests
             fakeObs.TriggerStatusUpdated();
 
             Assert.IsTrue((context.LastAlerts & AlertFlags.ObsSoundCaptureIssue) != 0, "Sound issue alert should restore when source returns to active scene");
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_PositionRestoration_RestoresSavedCoordinates()
+    {
+        var tempFolder = TestDirectory.Create("ServerPosRestore");
+        try
+        {
+            var settings = new ServerSettings
+            {
+                SettingsDirectory = tempFolder,
+                SettingsWindowX = 260,
+                SettingsWindowY = 170
+            };
+            using var audioMonitor = new WindowsAudioMonitor();
+            using var form = new ServerSettingsForm(settings, audioMonitor, _ => {}, _ => {}, _ => {});
+
+            Assert.AreEqual(FormStartPosition.Manual, form.StartPosition);
+            Assert.AreEqual(new Point(260, 170), form.Location);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_OffScreenOrNullCoordinates_DefaultsToCenterScreen()
+    {
+        var tempFolder = TestDirectory.Create("ServerPosCenterFallback");
+        try
+        {
+            // Null coordinates
+            var settingsNull = new ServerSettings
+            {
+                SettingsDirectory = tempFolder,
+                SettingsWindowX = null,
+                SettingsWindowY = null
+            };
+            using var audioMonitor = new WindowsAudioMonitor();
+            using var formNull = new ServerSettingsForm(settingsNull, audioMonitor, _ => {}, _ => {}, _ => {});
+
+            Assert.AreEqual(FormStartPosition.CenterScreen, formNull.StartPosition);
+
+            // Off-screen coordinates
+            var settingsOffScreen = new ServerSettings
+            {
+                SettingsDirectory = tempFolder,
+                SettingsWindowX = -99999,
+                SettingsWindowY = -99999
+            };
+            using var formOffScreen = new ServerSettingsForm(settingsOffScreen, audioMonitor, _ => {}, _ => {}, _ => {});
+
+            Assert.AreEqual(FormStartPosition.CenterScreen, formOffScreen.StartPosition);
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
+
+    [TestMethod]
+    public void ServerSettingsForm_RepositioningWhenLoaded_PersistsImmediatelyToDisk()
+    {
+        var tempFolder = TestDirectory.Create("ServerPosImmediatePersist");
+        try
+        {
+            var settings = new ServerSettings
+            {
+                SettingsDirectory = tempFolder,
+                SettingsWindowX = null,
+                SettingsWindowY = null
+            };
+            settings.Save();
+
+            using var audioMonitor = new WindowsAudioMonitor();
+            using var form = new ServerSettingsForm(settings, audioMonitor, _ => {}, _ => {}, _ => {});
+
+            // Before loaded, position changes do not trigger immediate save
+            form.Location = new Point(100, 100);
+            var preLoad = ServerSettings.Load(tempFolder);
+            Assert.IsNull(preLoad.SettingsWindowX);
+            Assert.IsNull(preLoad.SettingsWindowY);
+
+            // Mark loaded and reposition
+            form.MarkLoadedForTesting();
+            form.Location = new Point(370, 290);
+
+            Assert.AreEqual(370, settings.SettingsWindowX);
+            Assert.AreEqual(290, settings.SettingsWindowY);
+
+            var postMove = ServerSettings.Load(tempFolder);
+            Assert.AreEqual(370, postMove.SettingsWindowX);
+            Assert.AreEqual(290, postMove.SettingsWindowY);
+
+            // Verify reopening restores the newly persisted location
+            using var reopenedForm = new ServerSettingsForm(postMove, audioMonitor, _ => {}, _ => {}, _ => {});
+            Assert.AreEqual(FormStartPosition.Manual, reopenedForm.StartPosition);
+            Assert.AreEqual(new Point(370, 290), reopenedForm.Location);
         }
         finally
         {
