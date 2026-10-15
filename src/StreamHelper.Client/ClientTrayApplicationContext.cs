@@ -65,8 +65,9 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
         _udpListener = udpListener ?? new UdpListener(_settings.Port);
         _audioMonitor = audioMonitor ?? new WindowsAudioMonitor();
         _obsMonitor = obsMonitor ?? new ObsMonitor();
-        _correlationEngine = correlationEngine ?? new AudioCorrelationEngine();
-        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection);
+        _obsMonitor.SetRetryTimeout(_settings.RetryTimeout);
+        _correlationEngine = correlationEngine ?? new AudioCorrelationEngine(retryTimeoutSeconds: _settings.RetryTimeout);
+        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection, _settings.AudioLagWindowSeconds, _settings.RetryTimeout);
         _telemetrySender = telemetrySender ?? new ClientAudioTelemetrySender();
         _trayCycler = new TrayAlertCycler(_syncContext);
         _activeMode = _settings.Mode;
@@ -209,9 +210,10 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
 
         if (_activeMode == ClientMode.SinglePc)
         {
-            _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection, _settings.AudioLagWindowSeconds);
+            _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection, _settings.AudioLagWindowSeconds, _settings.RetryTimeout);
             _udpListener.Stop();
             _audioMonitor.StartMonitoring(_settings.MicrophoneId, _settings.RetryTimeout);
+            _obsMonitor.SetRetryTimeout(_settings.RetryTimeout);
 
             if (!string.IsNullOrEmpty(_settings.ObsIp))
             {
@@ -295,6 +297,12 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
             AppLogger.Info($"[Client] Setting retry timeout: {timeout}s");
             _settings.RetryTimeout = timeout;
             _settings.Save();
+
+            _correlationEngine.SetRetryTimeout(timeout);
+            if (_activeMode == ClientMode.SinglePc)
+            {
+                _obsMonitor.SetRetryTimeout(timeout);
+            }
 
             if (!_settings.IsPaused)
             {
@@ -610,6 +618,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
             _audioMonitor.Dispose();
             _obsMonitor.Dispose();
             _telemetrySender.Dispose();
+            _correlationEngine.Dispose();
         }
 
         base.Dispose(disposing);

@@ -64,9 +64,12 @@ public interface IObsMonitor : IDisposable
         int skippedFramesThreshold,
         string? audioDeviceName);
 
+    int RetryTimeoutSeconds => 5;
+    void SetRetryTimeout(int retryTimeoutSeconds) { }
     void ConnectAsync(string host, int port, string? password);
     void DisconnectAsync();
     void SetAudioInputName(string? name);
     void SetSkippedFramesThreshold(int threshold);
     void SetSkippedFramesPeriod(int seconds) { }
 }
+

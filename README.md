@@ -219,11 +219,11 @@ Exits the application.
 
 If OBS is not running, the server broadcasts the `obs disconnected` status to connected clients (tray icon displays `obs-disconnected`, hover tooltip: `OBS is not running`).
 
-The server checks for OBS availability periodically according to the retry timeout setting.
+The server checks for OBS availability periodically using a single-flight reconnection loop according to the configured retry timeout setting (default `5` seconds). When Stream Helper starts before OBS Studio (such as on Windows startup) or when OBS closes unexpectedly, reconnection attempts execute sequentially on the configured retry interval without accumulating background tasks or socket churn. Once OBS Studio launches, the next periodic retry automatically establishes the WebSocket connection, authenticates, transitions to `Connected`, and immediately clears the `obs disconnected` alert without requiring an application restart.
 
 #### Paused state
 
-When the server is in a paused state, it stops monitoring OBS and audio devices, disconnects all connected clients, and displays the `paused` status icon in the system tray (hover tooltip: `Helper is paused`).
+When the server is in a paused state, it stops monitoring OBS and audio devices, suspends all active OBS reconnection loops, disconnects all connected clients, and displays the `paused` status icon in the system tray (hover tooltip: `Helper is paused`). Resuming monitoring unpauses broadcasting and cleanly restarts OBS and microphone connection monitoring.
 
 #### Active state
 
@@ -260,6 +260,12 @@ In addition to basic audio capture statuses, the server also monitors and compar
     * Calculate Pearson's correlation coefficient between the Gaming PC and OBS RMS series across the dynamically scaled lag range (up to the configured **Audio lag compensation window**, e.g., 0 to 3.0 seconds in 100 ms steps), and evaluate the mean absolute RMS difference at the best lag.
     * If the audio on the Gaming PC exhibits significant dynamic variation (high RMS variance) while correlation remains low ($r < 0.5$) **and** the mean absolute difference exceeds the configured **Audio match tolerance** (default `20 dB`, range `0`–`40 dB`), the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover. Verified strong correlation ($r \ge 0.5$) suppresses spurious silence alerts in full mode.
     * If **Simple audio issue detection** is enabled, Pearson cross-correlation is completely bypassed/reset, and anomaly detection relies solely on the Conditional Silence Detector with lag compensation.
+  * **Sound Issue Alert Expiration on Retry Timeout:**
+    * When a sound issue condition is confirmed (via conditional silence detection or cross-correlation mismatch), the audio correlation engine records the detection timestamp.
+    * The active `sound issue` alert state remains active only during the configured **Retry timeout** duration (default `5` seconds, range `1`–`300` seconds).
+    * If the issue is not re-confirmed within the retry timeout period (such as during quiet gameplay, pause menus, desktop idle, or source silence where loopback telemetry ceases), the alert automatically expires and clears, avoiding persistent false alarms.
+    * Repeated issue detections continuously refresh the detection timestamp and extend the active alert duration.
+    * If matching OBS audio is positively detected, or if alert suppression activates (capture device muted, disconnected, or capture source not present in the active scene), the alert clears immediately without waiting for the retry timeout to elapse.
 
 ##### OBS stats monitoring
 
@@ -367,9 +373,9 @@ If the saved audio output is not found in the system, it is shown as the first s
 
 ##### Retry timeout
 
-Defaults to `5` seconds.
+Defaults to `5` seconds (range `1`–`300` seconds).
 
-Integer input field to adjust retry timeout in seconds.
+Integer input field to adjust retry timeout in seconds. Used for OBS WebSocket connection retries, periodic polling intervals, and the automatic expiration duration for unconfirmed `sound issue` alerts during audio source silence. Saved and applied immediately to running OBS monitors, background audio services, and correlation engines upon interaction in both Server and Single-PC Client modes without restarting the application.
 
 ##### Overlay opacity
 
@@ -549,6 +555,12 @@ flowchart TD
   - `win-arm64` (64-bit ARM)
 - Packages the Server and Client executables for each architecture into zip archives (`stream-helper-<version>-win-x64.zip`, `stream-helper-<version>-win-x86.zip`, `stream-helper-<version>-win-arm64.zip`).
 - Publishes a new GitHub Release with attached zip packages and auto-generated release notes.
+
+## Development & Agent Guidelines
+
+Contributors and AI coding agents working on Stream Helper must adhere to the core repository standards defined in [`AGENTS.md`](AGENTS.md):
+- **Immediate Save & Apply**: All settings adjusted in settings forms or dialogs (including sliders/trackbars, checkboxes, dropdowns, numeric up/downs, and text inputs) must be saved to configuration and applied immediately to active running services, monitors, and engines upon user interaction.
+- **Mandatory README Updates for Business Logic Changes**: Whenever application business logic, detection algorithms, timeout behaviors, threshold definitions, or core architecture workflows are added, modified, or removed, `README.md` must be updated to accurately reflect the changes.
 
 ## License
 

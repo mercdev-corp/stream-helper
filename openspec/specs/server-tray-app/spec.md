@@ -34,7 +34,7 @@ The server application SHALL provide a right-click context menu on the system tr
 
 #### Scenario: Toggle pause and resume
 - **WHEN** the user clicks Pause or Resume in the context menu
-- **THEN** the server toggles its paused state, updates the tray icon, saves the paused setting immediately, and either drops clients or resumes broadcasting
+- **THEN** the server toggles its paused state, updates the tray icon, saves the paused setting immediately, suspends microphone and OBS monitoring while pausing broadcasting, and resumes monitoring services and broadcasting when unpaused
 
 #### Scenario: Open settings dialog
 - **WHEN** the user clicks Settings in the context menu

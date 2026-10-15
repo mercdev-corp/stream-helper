@@ -12,6 +12,7 @@ public sealed class ConditionalSilenceDetector
     private bool _isAlertActive;
 
     public bool IsAlertActive => _isAlertActive;
+    public bool IsActivelyConfirmingIssue => _isAlertActive && _consecutiveActiveClientSilentObsCount >= _consecutiveReadingsRequired;
     public double ClientActiveThresholdDbfs => _clientActiveThresholdDbfs;
     public double ObsSilenceThresholdDbfs => _obsSilenceThresholdDbfs;
 
