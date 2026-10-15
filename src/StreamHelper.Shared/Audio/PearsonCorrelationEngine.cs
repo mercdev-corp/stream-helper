@@ -17,6 +17,7 @@ public sealed class PearsonCorrelationEngine
     private bool _isAlertActive;
 
     public bool IsAlertActive => _isAlertActive;
+    public bool IsActivelyConfirmingIssue => _isAlertActive && _consecutiveLowCorrCount >= _consecutiveLowCorrCountRequired;
     public int MaxLagSteps => _maxLagSteps;
     public int MinLagSteps => _minLagSteps;
     public double MinCorrelationThreshold => _minCorrelationThreshold;

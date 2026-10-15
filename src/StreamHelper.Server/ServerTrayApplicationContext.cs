@@ -57,9 +57,10 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
 
         _broadcaster = broadcaster ?? new UdpBroadcaster(_settings.Port);
         _audioMonitor = audioMonitor ?? new WindowsAudioMonitor();
-        _correlationEngine = correlationEngine ?? new AudioCorrelationEngine();
-        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection, _settings.AudioLagWindowSeconds);
+        _correlationEngine = correlationEngine ?? new AudioCorrelationEngine(retryTimeoutSeconds: _settings.RetryTimeout);
+        _correlationEngine.Configure(_settings.AudioMatchToleranceDb, _settings.SimpleAudioIssueDetection, _settings.AudioLagWindowSeconds, _settings.RetryTimeout);
         _obsMonitor = obsMonitor ?? new ObsMonitor();
+        _obsMonitor.SetRetryTimeout(_settings.RetryTimeout);
         _telemetryReceiver = telemetryReceiver ?? new AudioTelemetryReceiver(_correlationEngine, _settings.Port);
         _trayCycler = new TrayAlertCycler(_syncContext);
 
@@ -253,12 +254,17 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
         if (newPaused)
         {
             _audioMonitor.StopMonitoring();
+            _obsMonitor.Stop();
             _telemetryReceiver.Stop();
             _trayCycler.SetState(AlertFlags.None, isPaused: true);
         }
         else
         {
             _audioMonitor.StartMonitoring(_settings.MicrophoneId, _settings.RetryTimeout);
+            if (!string.IsNullOrEmpty(_settings.ObsIp))
+            {
+                _obsMonitor.ConnectAsync(_settings.ObsIp, _settings.ObsPort, _settings.ObsPassword);
+            }
             _telemetryReceiver.Start();
             _trayCycler.Start();
             UpdateAllStates();
@@ -297,6 +303,8 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
                 onTimeoutChanged: newTimeout =>
                 {
                     AppLogger.Info($"[Server] Timeout changed callback triggered: newTimeout={newTimeout}s");
+                    _correlationEngine.SetRetryTimeout(newTimeout);
+                    _obsMonitor.SetRetryTimeout(newTimeout);
                     if (!_settings.IsPaused)
                     {
                         _audioMonitor.StartMonitoring(_settings.MicrophoneId, newTimeout);
@@ -381,6 +389,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
             _obsMonitor.Dispose();
             _telemetryReceiver.Dispose();
             _broadcaster.Dispose();
+            _correlationEngine.Dispose();
         }
 
         base.Dispose(disposing);

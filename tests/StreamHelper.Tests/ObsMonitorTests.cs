@@ -480,7 +480,105 @@ public sealed class ObsMonitorTests
         }
         Assert.IsTrue(monitor.IsAudioSourceInCurrentScene, "Audio source should be found inside Audio Group despite circular reference between scenes");
     }
+
+    private static int GetFreePort()
+    {
+        var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    [TestMethod]
+    public void ObsMonitor_SetRetryTimeout_UpdatesRetryIntervalAndClampsBehavior()
+    {
+        using var monitor = new ObsMonitor(retryTimeoutSeconds: 5);
+        Assert.AreEqual(5, monitor.RetryTimeoutSeconds);
+
+        monitor.SetRetryTimeout(10);
+        Assert.AreEqual(10, monitor.RetryTimeoutSeconds);
+
+        // Clamping to minimum of 1
+        monitor.SetRetryTimeout(0);
+        Assert.AreEqual(1, monitor.RetryTimeoutSeconds);
+
+        monitor.SetRetryTimeout(-5);
+        Assert.AreEqual(1, monitor.RetryTimeoutSeconds);
+
+        monitor.SetRetryTimeout(30);
+        Assert.AreEqual(30, monitor.RetryTimeoutSeconds);
+    }
+
+    [TestMethod]
+    public async Task ObsMonitor_RepeatedFailedConnectionAttempts_DoesNotAccumulateTasksOrThrow()
+    {
+        int port = GetFreePort();
+        using var monitor = new ObsMonitor("127.0.0.1", port, password: null, retryTimeoutSeconds: 1);
+
+        monitor.Start();
+        Assert.IsTrue(monitor.IsConnectLoopRunning, "Connect loop should be running");
+
+        // Rapid multiple redundant Start and ConnectAsync invocations should be idempotent
+        monitor.Start();
+        monitor.Start();
+        monitor.ConnectAsync("127.0.0.1", port, null);
+        monitor.ConnectAsync("127.0.0.1", port, null);
+
+        // Allow multiple retry intervals to elapse while target is unreachable
+        await Task.Delay(2500);
+
+        Assert.IsTrue(monitor.IsConnectLoopRunning, "Connect loop should remain single-flight and active");
+        Assert.IsFalse(monitor.IsConnected, "Should remain disconnected when endpoint is unreachable");
+
+        // Stop cleanly terminates the loop
+        monitor.Stop();
+        await Task.Delay(200);
+
+        Assert.IsFalse(monitor.IsConnectLoopRunning, "Connect loop should stop cleanly");
+        Assert.IsFalse(monitor.IsConnected);
+    }
+
+    [TestMethod]
+    public async Task ObsMonitor_EndpointBecomesAvailableAfterFailures_ConnectsAndTriggersConnectionStateChanged()
+    {
+        int port = GetFreePort();
+        using var monitor = new ObsMonitor("127.0.0.1", port, password: null, retryTimeoutSeconds: 1);
+
+        var connectionStates = new List<ObsConnectionState>();
+        monitor.ConnectionStateChanged += state => connectionStates.Add(state);
+
+        monitor.Start();
+
+        // Target endpoint is initially offline
+        Assert.IsFalse(monitor.IsConnected);
+        Assert.AreEqual(ObsConnectionState.Disconnected, monitor.ConnectionState);
+
+        // Allow at least one failed connection cycle to elapse
+        await Task.Delay(1500);
+        Assert.IsFalse(monitor.IsConnected);
+
+        // Start mock OBS server
+        using var mockServer = new MockObsWebSocketServer(port, null);
+        mockServer.SetInputs(new[]
+        {
+            new { inputName = "Mic/Aux", inputKind = "wasapi_input_capture" }
+        });
+        mockServer.Start();
+
+        // Wait for monitor to automatically reconnect and identify
+        var timeout = DateTime.UtcNow.AddSeconds(5);
+        while (!monitor.IsConnected && DateTime.UtcNow < timeout)
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.IsTrue(monitor.IsConnected, "Monitor should automatically connect once OBS starts");
+        Assert.AreEqual(ObsConnectionState.Connected, monitor.ConnectionState);
+        Assert.IsTrue(connectionStates.Contains(ObsConnectionState.Connected), "ConnectionStateChanged should have fired with Connected");
+    }
 }
+
 
 internal sealed class MockObsWebSocketServer : IDisposable
 {

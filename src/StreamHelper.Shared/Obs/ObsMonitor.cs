@@ -38,6 +38,8 @@ public sealed class ObsMonitor : IObsMonitor
     private string? _currentProgramSceneName;
     private readonly HashSet<string> _specialAudioInputs = new(StringComparer.OrdinalIgnoreCase);
     private List<string> _availableAudioInputs = new();
+    private bool _isConnectLoopRunning;
+    private Task? _connectLoopTask;
     private bool _disposed;
 
     private readonly RollingFrameCounter _networkDroppedCounter;
@@ -61,6 +63,23 @@ public sealed class ObsMonitor : IObsMonitor
             lock (_lock) return _skippedFramesPeriodSeconds;
         }
     }
+
+    public int RetryTimeoutSeconds
+    {
+        get
+        {
+            lock (_lock) return _retryTimeoutSeconds;
+        }
+    }
+
+    internal bool IsConnectLoopRunning
+    {
+        get
+        {
+            lock (_lock) return _isConnectLoopRunning;
+        }
+    }
+
 
     public IReadOnlyList<string> AvailableAudioInputs
     {
@@ -187,6 +206,19 @@ public sealed class ObsMonitor : IObsMonitor
         AppLogger.Info($"[ObsMonitor] Skipped frames evaluation period set to {clamped}s.");
     }
 
+    public void SetRetryTimeout(int retryTimeoutSeconds)
+    {
+        int clamped;
+        lock (_lock)
+        {
+            clamped = Math.Max(1, retryTimeoutSeconds);
+            if (_retryTimeoutSeconds == clamped) return;
+            _retryTimeoutSeconds = clamped;
+        }
+        AppLogger.Info($"[ObsMonitor] Retry timeout set to {clamped}s.");
+    }
+
+
     public void UpdateConfig(
         string host,
         int port,
@@ -264,6 +296,7 @@ public sealed class ObsMonitor : IObsMonitor
         lock (_lock)
         {
             _isRunning = false;
+            _isConnected = false;
         }
 
         AppLogger.Info($"[ObsMonitor] Stopping OBS monitor.");
@@ -297,77 +330,141 @@ public sealed class ObsMonitor : IObsMonitor
 
     private void StartConnectLoop()
     {
+        Task? taskToAwait = null;
         lock (_lock)
         {
             if (!_isRunning || _disposed || _isConnected) return;
+            if (_isConnectLoopRunning && _loopCts != null && !_loopCts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (_isConnectLoopRunning)
+            {
+                taskToAwait = _connectLoopTask;
+            }
         }
 
-        _ = Task.Run(async () =>
+        if (taskToAwait != null)
         {
-            while (true)
+            _ = taskToAwait.ContinueWith(_ =>
             {
-                string host;
-                int port;
                 lock (_lock)
                 {
-                    if (!_isRunning || _disposed || _isConnected) return;
-                    host = _host;
-                    port = _port;
+                    if (!_isRunning || _disposed || _isConnected || _isConnectLoopRunning) return;
                 }
+                StartConnectLoop();
+            }, TaskScheduler.Default);
+            return;
+        }
 
+        lock (_lock)
+        {
+            if (!_isRunning || _disposed || _isConnected || _isConnectLoopRunning) return;
+            _isConnectLoopRunning = true;
+            _loopCts?.Dispose();
+            _loopCts = new CancellationTokenSource();
+            var ct = _loopCts.Token;
+
+            _connectLoopTask = Task.Run(async () =>
+            {
                 try
                 {
-                    AppLogger.Info($"[ObsMonitor] Connecting to OBS WebSocket at ws://{host}:{port}...");
-                    _loopCts?.Dispose();
-                    _loopCts = new CancellationTokenSource();
-                    var ct = _loopCts.Token;
-
-                    var ws = new ClientWebSocket();
+                    await ConnectLoopWorkerAsync(ct).ConfigureAwait(false);
+                }
+                finally
+                {
                     lock (_lock)
                     {
-                        _webSocket = ws;
+                        _isConnectLoopRunning = false;
                     }
-
-                    var uri = new Uri($"ws://{host}:{port}");
-                    using (var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
-                    using (var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, connectCts.Token))
-                    {
-                        await ws.ConnectAsync(uri, linked.Token).ConfigureAwait(false);
-                    }
-
-                    AppLogger.Info($"[ObsMonitor] WebSocket connected to ws://{host}:{port}. Receiving messages...");
-                    await ReceiveLoopAsync(ws, ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
-                {
-                    // Expected on stop/cancel
-                }
-                catch (Exception ex)
-                {
-                    AppLogger.Debug($"[ObsMonitor] Connection attempt failed: {ex.Message}");
-                }
+            });
+        }
+    }
 
-                // If loop finished, cleanup connection and wait retry timeout
-                CleanupConnection();
+    private async Task ConnectLoopWorkerAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            string host;
+            int port;
+            lock (_lock)
+            {
+                if (!_isRunning || _disposed || _isConnected) return;
+                host = _host;
+                port = _port;
+            }
 
-                int timeoutSec;
+            ClientWebSocket? ws = null;
+            try
+            {
+                AppLogger.Info($"[ObsMonitor] Connecting to OBS WebSocket at ws://{host}:{port}...");
+                ws = new ClientWebSocket();
                 lock (_lock)
                 {
-                    if (!_isRunning || _disposed) return;
-                    timeoutSec = _retryTimeoutSeconds;
+                    _webSocket = ws;
+                }
+
+                var uri = new Uri($"ws://{host}:{port}");
+                using (var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                using (var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, connectCts.Token))
+                {
+                    await ws.ConnectAsync(uri, linked.Token).ConfigureAwait(false);
+                }
+
+                AppLogger.Info($"[ObsMonitor] WebSocket connected to ws://{host}:{port}. Receiving messages...");
+                await ReceiveLoopAsync(ws, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Debug($"[ObsMonitor] Connection attempt failed: {ex.Message}");
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    if (_webSocket == ws)
+                    {
+                        _webSocket = null;
+                    }
                 }
 
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(timeoutSec)).ConfigureAwait(false);
+                    ws?.Dispose();
                 }
-                catch (OperationCanceledException)
+                catch
                 {
-                    return;
                 }
+
+                CleanupConnection();
             }
-        });
+
+            if (ct.IsCancellationRequested) return;
+
+            int timeoutSec;
+            lock (_lock)
+            {
+                if (!_isRunning || _disposed || _isConnected) return;
+                timeoutSec = _retryTimeoutSeconds;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(timeoutSec), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
     }
+
 
     private async Task ReceiveLoopAsync(ClientWebSocket ws, CancellationToken ct)
     {
@@ -1216,8 +1313,10 @@ public sealed class ObsMonitor : IObsMonitor
 
     private void DisconnectAndScheduleReconnect()
     {
+        StopTimers();
         DisconnectSocket();
         CleanupConnection();
+        StartConnectLoop();
     }
 
     private void CleanupConnection()
@@ -1244,8 +1343,6 @@ public sealed class ObsMonitor : IObsMonitor
             }
             StateChanged?.Invoke();
         }
-
-        ScheduleReconnect();
     }
 
     private void ScheduleReconnect()
@@ -1261,23 +1358,31 @@ public sealed class ObsMonitor : IObsMonitor
 
     private void DisconnectSocket()
     {
+        CancellationTokenSource? cts;
+        ClientWebSocket? ws;
         lock (_lock)
         {
-            _loopCts?.Cancel();
-            _loopCts?.Dispose();
+            cts = _loopCts;
             _loopCts = null;
+            ws = _webSocket;
+            _webSocket = null;
+        }
 
-            if (_webSocket != null)
-            {
-                try
-                {
-                    _webSocket.Dispose();
-                }
-                catch
-                {
-                }
-                _webSocket = null;
-            }
+        try
+        {
+            cts?.Cancel();
+            cts?.Dispose();
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            ws?.Dispose();
+        }
+        catch
+        {
         }
 
         foreach (var kvp in _pendingRequests)
@@ -1286,6 +1391,7 @@ public sealed class ObsMonitor : IObsMonitor
         }
         _pendingRequests.Clear();
     }
+
 
     private void ResetState()
     {
@@ -1317,7 +1423,9 @@ public sealed class ObsMonitor : IObsMonitor
             if (_disposed) return;
             _disposed = true;
             _isRunning = false;
+            _isConnected = false;
         }
+
 
         StopTimers();
         DisconnectSocket();

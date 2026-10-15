@@ -813,16 +813,20 @@ public sealed class ServerNetworkingAndSettingsTests
 
         public bool IsAudioSourceInCurrentScene { get; set; } = true;
         public int SkippedFramesPeriodSeconds { get; set; } = 5;
+        public int RetryTimeoutSeconds { get; set; } = 5;
+        public int StopCallCount { get; private set; }
+        public int ConnectAsyncCallCount { get; private set; }
 
         public void Start() { }
-        public void Stop() { }
+        public void Stop() => StopCallCount++;
         public void UpdateConfig(string host, int port, string? password, int retryTimeoutSeconds, int skippedFramesThreshold, string? audioDeviceName) { }
         public void UpdateConfig(string host, int port, string? password, int retryTimeoutSeconds, int skippedFramesThreshold, string? audioDeviceName, int skippedFramesPeriodSeconds) { }
-        public void ConnectAsync(string host, int port, string? password) { }
+        public void ConnectAsync(string host, int port, string? password) => ConnectAsyncCallCount++;
         public void DisconnectAsync() { }
         public void SetAudioInputName(string? name) { }
         public void SetSkippedFramesThreshold(int threshold) { }
         public void SetSkippedFramesPeriod(int seconds) => SkippedFramesPeriodSeconds = seconds;
+        public void SetRetryTimeout(int retryTimeoutSeconds) => RetryTimeoutSeconds = retryTimeoutSeconds;
         public void Dispose() { }
 
         public void RaiseConnected()
@@ -984,5 +988,52 @@ public sealed class ServerNetworkingAndSettingsTests
             if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
         }
     }
+
+    [TestMethod]
+    public void ServerTrayApplicationContext_PauseAndResume_CorrectlySuspendsAndRestartsObsMonitor()
+    {
+        var tempFolder = TestDirectory.Create("ServerPauseResumeObsTest");
+        try
+        {
+            var settings = new ServerSettings
+            {
+                SettingsDirectory = tempFolder,
+                Port = 13994,
+                IsPaused = false,
+                ObsIp = "127.0.0.1",
+                ObsPort = 4455,
+                RetryTimeout = 7
+            };
+            var fakeAudio = new FakeAudioMonitor();
+            using var broadcaster = new UdpBroadcaster(13994);
+            var fakeObs = new FakeObsMonitor();
+            var correlationEngine = new AudioCorrelationEngine();
+
+            using var context = new ServerTrayApplicationContext(settings, fakeAudio, broadcaster, fakeObs, correlationEngine);
+
+            // Verified retry timeout passed at startup
+            Assert.AreEqual(7, fakeObs.RetryTimeoutSeconds);
+            Assert.AreEqual(1, fakeObs.ConnectAsyncCallCount, "Should connect OBS at startup when unpaused");
+            Assert.AreEqual(0, fakeObs.StopCallCount);
+
+            // Click Pause on tray context menu
+            var pauseItem = context.ContextMenu.Items[0];
+            pauseItem.PerformClick();
+
+            Assert.IsTrue(settings.IsPaused, "Settings should reflect paused state");
+            Assert.AreEqual(1, fakeObs.StopCallCount, "Should stop OBS monitor when paused");
+
+            // Click Resume on tray context menu
+            pauseItem.PerformClick();
+
+            Assert.IsFalse(settings.IsPaused, "Settings should reflect unpaused state");
+            Assert.AreEqual(2, fakeObs.ConnectAsyncCallCount, "Should restart OBS monitor with ConnectAsync when resumed");
+        }
+        finally
+        {
+            if (Directory.Exists(tempFolder)) Directory.Delete(tempFolder, true);
+        }
+    }
 }
+
 

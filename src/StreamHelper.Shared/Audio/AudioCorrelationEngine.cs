@@ -1,8 +1,9 @@
 using StreamHelper.Shared.Common;
+using StreamHelper.Shared.Protocol;
 
 namespace StreamHelper.Shared.Audio;
 
-public sealed class AudioCorrelationEngine
+public sealed class AudioCorrelationEngine : IDisposable
 {
     private readonly object _lock = new();
     private readonly ConditionalSilenceDetector _silenceDetector;
@@ -21,6 +22,9 @@ public sealed class AudioCorrelationEngine
     private bool _simpleDetection;
     private double _toleranceDb = 20.0;
     private double _lagWindowSeconds = 1.0;
+    private int _retryTimeoutSeconds = ProtocolConstants.DefaultRetryTimeoutSeconds;
+    private DateTime? _lastAudioIssueTime;
+    private readonly System.Threading.Timer _expirationTimer;
 
     private bool _hasSoundIssue;
 
@@ -61,6 +65,16 @@ public sealed class AudioCorrelationEngine
         get { lock (_lock) return _lagWindowSeconds; }
     }
 
+    public int RetryTimeoutSeconds
+    {
+        get { lock (_lock) return _retryTimeoutSeconds; }
+    }
+
+    public DateTime? LastAudioIssueTime
+    {
+        get { lock (_lock) return _lastAudioIssueTime; }
+    }
+
     public event Action<bool>? SoundIssueChanged;
 
     public AudioCorrelationEngine(
@@ -68,7 +82,8 @@ public sealed class AudioCorrelationEngine
         PearsonCorrelationEngine? correlationEngine = null,
         double toleranceDb = 20.0,
         bool simpleMode = false,
-        double lagWindowSeconds = 1.0)
+        double lagWindowSeconds = 1.0,
+        int retryTimeoutSeconds = ProtocolConstants.DefaultRetryTimeoutSeconds)
     {
         _silenceDetector = silenceDetector ?? new ConditionalSilenceDetector();
         _correlationEngine = correlationEngine ?? new PearsonCorrelationEngine(toleranceDb: toleranceDb);
@@ -77,27 +92,59 @@ public sealed class AudioCorrelationEngine
         _simpleDetection = simpleMode;
         _lagWindowSeconds = Math.Clamp(lagWindowSeconds, 0.0, 3.0);
         _correlationEngine.SetLagWindow(_lagWindowSeconds);
+        _retryTimeoutSeconds = Math.Clamp(retryTimeoutSeconds, 1, 300);
+        _expirationTimer = new System.Threading.Timer(OnExpirationTimerFired, null, Timeout.Infinite, Timeout.Infinite);
+    }
+
+    public void SetRetryTimeout(int retryTimeoutSeconds)
+    {
+        int clamped = Math.Clamp(retryTimeoutSeconds, 1, 300);
+        bool changed = false;
+        int oldTimeout;
+        lock (_lock)
+        {
+            oldTimeout = _retryTimeoutSeconds;
+            if (_retryTimeoutSeconds != clamped)
+            {
+                _retryTimeoutSeconds = clamped;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            AppLogger.Info($"[AudioCorrelation] RetryTimeout changed from {oldTimeout}s to {clamped}s.");
+            EvaluateSoundIssue();
+        }
     }
 
     public void Configure(double toleranceDb, bool simpleMode)
     {
-        Configure(toleranceDb, simpleMode, _lagWindowSeconds);
+        Configure(toleranceDb, simpleMode, _lagWindowSeconds, _retryTimeoutSeconds);
     }
 
     public void Configure(double toleranceDb, bool simpleMode, double lagWindowSeconds)
     {
+        Configure(toleranceDb, simpleMode, lagWindowSeconds, _retryTimeoutSeconds);
+    }
+
+    public void Configure(double toleranceDb, bool simpleMode, double lagWindowSeconds, int retryTimeoutSeconds)
+    {
         bool modeChanged = false;
         bool toleranceChanged = false;
         bool lagChanged = false;
+        bool timeoutChanged = false;
         double oldTolerance;
         bool oldMode;
         double oldLag;
+        int oldTimeout;
 
         lock (_lock)
         {
             oldTolerance = _toleranceDb;
             oldMode = _simpleDetection;
             oldLag = _lagWindowSeconds;
+            oldTimeout = _retryTimeoutSeconds;
 
             double clampedTolerance = Math.Clamp(toleranceDb, 0, 40);
             if (Math.Abs(_toleranceDb - clampedTolerance) > 1e-4)
@@ -113,6 +160,13 @@ public sealed class AudioCorrelationEngine
                 _lagWindowSeconds = clampedLag;
                 _correlationEngine.SetLagWindow(_lagWindowSeconds);
                 lagChanged = true;
+            }
+
+            int clampedTimeout = Math.Clamp(retryTimeoutSeconds, 1, 300);
+            if (_retryTimeoutSeconds != clampedTimeout)
+            {
+                _retryTimeoutSeconds = clampedTimeout;
+                timeoutChanged = true;
             }
 
             if (_simpleDetection != simpleMode)
@@ -131,6 +185,11 @@ public sealed class AudioCorrelationEngine
         if (lagChanged)
         {
             AppLogger.Info($"[AudioCorrelation] LagWindowSeconds changed from {oldLag:F1}s to {_lagWindowSeconds:F1}s.");
+        }
+
+        if (timeoutChanged)
+        {
+            AppLogger.Info($"[AudioCorrelation] RetryTimeout changed from {oldTimeout}s to {_retryTimeoutSeconds}s.");
         }
 
         if (modeChanged)
@@ -182,6 +241,7 @@ public sealed class AudioCorrelationEngine
 
     public void IngestObsAudioMeter(double rmsDbfs, double peakDbfs, DateTime timestamp)
     {
+        bool shouldEvaluate = false;
         lock (_lock)
         {
             _latestObsRmsDbfs = rmsDbfs;
@@ -200,6 +260,16 @@ public sealed class AudioCorrelationEngine
             {
                 _obsMeterHistory.RemoveRange(0, removeCount);
             }
+
+            if (_hasSoundIssue && rmsDbfs >= _silenceDetector.ObsSilenceThresholdDbfs)
+            {
+                shouldEvaluate = true;
+            }
+        }
+
+        if (shouldEvaluate)
+        {
+            EvaluateSoundIssue();
         }
     }
 
@@ -237,6 +307,18 @@ public sealed class AudioCorrelationEngine
             }
         }
 
+        bool activeReadingConfirmed = _simpleDetection
+            ? _silenceDetector.IsActivelyConfirmingIssue
+            : (_silenceDetector.IsActivelyConfirmingIssue || _correlationEngine.IsActivelyConfirmingIssue);
+
+        if (activeReadingConfirmed)
+        {
+            lock (_lock)
+            {
+                _lastAudioIssueTime = DateTime.UtcNow;
+            }
+        }
+
         EvaluateSoundIssue();
     }
 
@@ -270,6 +352,18 @@ public sealed class AudioCorrelationEngine
                 {
                     _correlationEngine.AddSamples(reading, obsCorrRms);
                 }
+            }
+        }
+
+        bool activePacketConfirmed = _simpleDetection
+            ? _silenceDetector.IsActivelyConfirmingIssue
+            : (_silenceDetector.IsActivelyConfirmingIssue || _correlationEngine.IsActivelyConfirmingIssue);
+
+        if (activePacketConfirmed)
+        {
+            lock (_lock)
+            {
+                _lastAudioIssueTime = DateTime.UtcNow;
             }
         }
 
@@ -366,6 +460,80 @@ public sealed class AudioCorrelationEngine
         return _latestObsRmsDbfs;
     }
 
+    private void ArmExpirationTimerLocked(TimeSpan duration)
+    {
+        try
+        {
+            _expirationTimer.Change(duration, Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private void DisarmExpirationTimerLocked()
+    {
+        try
+        {
+            _expirationTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private void OnExpirationTimerFired(object? state)
+    {
+        bool shouldClear = false;
+        lock (_lock)
+        {
+            if (_hasSoundIssue)
+            {
+                if (_lastAudioIssueTime.HasValue)
+                {
+                    TimeSpan elapsed = DateTime.UtcNow - _lastAudioIssueTime.Value;
+                    if (elapsed >= TimeSpan.FromSeconds(_retryTimeoutSeconds))
+                    {
+                        shouldClear = true;
+                        _lastAudioIssueTime = null;
+                        _silenceDetector.Reset();
+                        _correlationEngine.Reset();
+                        DisarmExpirationTimerLocked();
+                    }
+                    else
+                    {
+                        TimeSpan remaining = TimeSpan.FromSeconds(_retryTimeoutSeconds) - elapsed;
+                        if (remaining > TimeSpan.Zero)
+                        {
+                            ArmExpirationTimerLocked(remaining);
+                        }
+                        else
+                        {
+                            shouldClear = true;
+                            _lastAudioIssueTime = null;
+                            _silenceDetector.Reset();
+                            _correlationEngine.Reset();
+                            DisarmExpirationTimerLocked();
+                        }
+                    }
+                }
+                else
+                {
+                    shouldClear = true;
+                    _lastAudioIssueTime = null;
+                    _silenceDetector.Reset();
+                    _correlationEngine.Reset();
+                    DisarmExpirationTimerLocked();
+                }
+            }
+        }
+
+        if (shouldClear)
+        {
+            HasSoundIssue = false;
+        }
+    }
+
     private void EvaluateSoundIssue()
     {
         bool suppressed;
@@ -380,6 +548,10 @@ public sealed class AudioCorrelationEngine
 
         if (suppressed)
         {
+            lock (_lock)
+            {
+                DisarmExpirationTimerLocked();
+            }
             HasSoundIssue = false;
             return;
         }
@@ -387,11 +559,7 @@ public sealed class AudioCorrelationEngine
         bool silenceIssue = _silenceDetector.IsAlertActive;
         bool correlationIssue = !simpleMode && _correlationEngine.IsAlertActive;
 
-        if (simpleMode)
-        {
-            HasSoundIssue = silenceIssue;
-        }
-        else
+        if (!simpleMode)
         {
             // Full mode: verified correlation suppresses spurious silence alerts
             if (_correlationEngine.HasValidCalculation &&
@@ -400,8 +568,78 @@ public sealed class AudioCorrelationEngine
             {
                 silenceIssue = false;
             }
+        }
 
-            HasSoundIssue = silenceIssue || correlationIssue;
+        bool issueAlertActive = simpleMode ? silenceIssue : (silenceIssue || correlationIssue);
+        bool obsHasAudio = GetCurrentObsRms() >= _silenceDetector.ObsSilenceThresholdDbfs;
+        bool matchingObsAudio = obsHasAudio && (simpleMode || !_correlationEngine.IsAlertActive);
+
+        if (matchingObsAudio && !issueAlertActive)
+        {
+            lock (_lock)
+            {
+                _lastAudioIssueTime = null;
+                DisarmExpirationTimerLocked();
+            }
+            HasSoundIssue = false;
+            return;
+        }
+
+        bool shouldClear = false;
+        bool shouldSetIssue = false;
+
+        lock (_lock)
+        {
+            if (_hasSoundIssue || issueAlertActive)
+            {
+                if (_lastAudioIssueTime.HasValue)
+                {
+                    TimeSpan elapsed = DateTime.UtcNow - _lastAudioIssueTime.Value;
+                    if (elapsed >= TimeSpan.FromSeconds(_retryTimeoutSeconds))
+                    {
+                        shouldClear = true;
+                        _lastAudioIssueTime = null;
+                        _silenceDetector.Reset();
+                        _correlationEngine.Reset();
+                        DisarmExpirationTimerLocked();
+                    }
+                    else
+                    {
+                        shouldSetIssue = true;
+                        TimeSpan remaining = TimeSpan.FromSeconds(_retryTimeoutSeconds) - elapsed;
+                        ArmExpirationTimerLocked(remaining);
+                    }
+                }
+                else if (issueAlertActive)
+                {
+                    _lastAudioIssueTime = DateTime.UtcNow;
+                    shouldSetIssue = true;
+                    ArmExpirationTimerLocked(TimeSpan.FromSeconds(_retryTimeoutSeconds));
+                }
+                else
+                {
+                    shouldClear = true;
+                    _lastAudioIssueTime = null;
+                    _silenceDetector.Reset();
+                    _correlationEngine.Reset();
+                    DisarmExpirationTimerLocked();
+                }
+            }
+            else
+            {
+                _lastAudioIssueTime = null;
+                DisarmExpirationTimerLocked();
+                shouldClear = true;
+            }
+        }
+
+        if (shouldClear)
+        {
+            HasSoundIssue = false;
+        }
+        else if (shouldSetIssue)
+        {
+            HasSoundIssue = true;
         }
     }
 
@@ -414,9 +652,16 @@ public sealed class AudioCorrelationEngine
             _obsMeterHistory.Clear();
             _hasSoundIssue = false;
             _isNotInActiveScene = false;
+            _lastAudioIssueTime = null;
+            DisarmExpirationTimerLocked();
         }
 
         _silenceDetector.Reset();
         _correlationEngine.Reset();
+    }
+
+    public void Dispose()
+    {
+        _expirationTimer.Dispose();
     }
 }

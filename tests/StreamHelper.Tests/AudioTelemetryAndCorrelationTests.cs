@@ -738,4 +738,171 @@ public sealed class AudioTelemetryAndCorrelationTests
 
         Assert.IsFalse(normalEngine.HasSoundIssue, "Low-volume scene (-46 dBFS client vs -50 dBFS OBS) should not trigger alert in normal mode");
     }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_RetryTimeout_PropertyUpdatesProperly()
+    {
+        using var defaultEngine = new AudioCorrelationEngine();
+        Assert.AreEqual(5, defaultEngine.RetryTimeoutSeconds);
+
+        using var customEngine = new AudioCorrelationEngine(retryTimeoutSeconds: 12);
+        Assert.AreEqual(12, customEngine.RetryTimeoutSeconds);
+
+        customEngine.SetRetryTimeout(25);
+        Assert.AreEqual(25, customEngine.RetryTimeoutSeconds);
+
+        // Clamp checks
+        customEngine.SetRetryTimeout(-5);
+        Assert.AreEqual(1, customEngine.RetryTimeoutSeconds);
+
+        customEngine.SetRetryTimeout(999);
+        Assert.AreEqual(300, customEngine.RetryTimeoutSeconds);
+
+        // Configure overload checks
+        customEngine.Configure(15.0, simpleMode: true, lagWindowSeconds: 2.0, retryTimeoutSeconds: 8);
+        Assert.AreEqual(8, customEngine.RetryTimeoutSeconds);
+        Assert.AreEqual(15.0, customEngine.ToleranceDb);
+        Assert.IsTrue(customEngine.SimpleDetection);
+        Assert.AreEqual(2.0, customEngine.LagWindowSeconds);
+    }
+
+    [TestMethod]
+    public async Task AudioCorrelationEngine_SoundIssue_AutoExpiresAfterTimeoutDuringSilence()
+    {
+        var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);
+        using var engine = new AudioCorrelationEngine(silenceDetector: silenceDetector, retryTimeoutSeconds: 1);
+
+        bool? lastEventVal = null;
+        engine.SoundIssueChanged += val => lastEventVal = val;
+
+        // Feed reading that triggers sound issue
+        engine.ProcessClientReading(-20.0);
+        Assert.IsTrue(engine.HasSoundIssue);
+        Assert.IsTrue(lastEventVal == true);
+        Assert.IsNotNull(engine.LastAudioIssueTime);
+
+        // Without any further packets or audio, wait for retry timeout (1s) to elapse
+        await Task.Delay(1300);
+
+        Assert.IsFalse(engine.HasSoundIssue, "Sound issue should auto-expire after retry timeout when unconfirmed during silence");
+        Assert.IsTrue(lastEventVal == false, "SoundIssueChanged event should fire with false on expiration");
+    }
+
+    [TestMethod]
+    public async Task AudioCorrelationEngine_SoundIssue_AutoExpiresAfterTimeoutDuringSilence_DualPcPacket()
+    {
+        var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 30);
+        using var engine = new AudioCorrelationEngine(silenceDetector: silenceDetector, retryTimeoutSeconds: 1);
+
+        // Send 3 packets (30 active readings) to trigger alert
+        for (ulong p = 1; p <= 3; p++)
+        {
+            engine.ProcessTelemetryPacket(new AudioTelemetryPacket
+            {
+                SequenceNumber = p,
+                TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Readings = new float[] { -20f, -20f, -20f, -20f, -20f, -20f, -20f, -20f, -20f, -20f }
+            });
+        }
+
+        Assert.IsTrue(engine.HasSoundIssue, "Sound issue should trigger after 30 active readings with silent OBS");
+        Assert.IsNotNull(engine.LastAudioIssueTime);
+
+        // Silence ensues: no further telemetry packets arrive (e.g. WASAPI loopback produces no packets during silence)
+        await Task.Delay(1300);
+
+        Assert.IsFalse(engine.HasSoundIssue, "Dual-PC sound issue should auto-expire after retry timeout when packets cease");
+    }
+
+    [TestMethod]
+    public async Task AudioCorrelationEngine_RepeatedIssueDetections_RefreshTimestampAndSustainAlert()
+    {
+        var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);
+        using var engine = new AudioCorrelationEngine(silenceDetector: silenceDetector, retryTimeoutSeconds: 1);
+
+        // Initial trigger
+        engine.ProcessClientReading(-20.0);
+        Assert.IsTrue(engine.HasSoundIssue);
+        DateTime? initialTime = engine.LastAudioIssueTime;
+        Assert.IsNotNull(initialTime);
+
+        // Repeat detections every 400ms across 1.6 seconds (exceeding initial 1.0s timeout)
+        for (int i = 0; i < 4; i++)
+        {
+            await Task.Delay(400);
+            engine.ProcessClientReading(-20.0);
+            Assert.IsTrue(engine.HasSoundIssue, $"Alert should remain sustained at iteration {i}");
+            Assert.IsTrue(engine.LastAudioIssueTime >= initialTime, "LastAudioIssueTime should be refreshed");
+            initialTime = engine.LastAudioIssueTime;
+        }
+
+        // Now stop feeding readings (source silence)
+        await Task.Delay(1300);
+        Assert.IsFalse(engine.HasSoundIssue, "Alert should expire and clear after feeding stops and timeout elapses");
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_SoundIssue_ClearedImmediatelyWhenObsAudioDetectedBeforeTimeout()
+    {
+        var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);
+        using var engine = new AudioCorrelationEngine(silenceDetector: silenceDetector, retryTimeoutSeconds: 10);
+
+        bool? lastEventVal = null;
+        engine.SoundIssueChanged += val => lastEventVal = val;
+
+        // Trigger sound issue
+        engine.ProcessClientReading(-20.0);
+        Assert.IsTrue(engine.HasSoundIssue);
+        Assert.IsTrue(lastEventVal == true);
+
+        // Immediately OBS captures matching valid audio (-20 dBFS)
+        var now = DateTime.UtcNow;
+        engine.IngestObsAudioMeter(-20.0, -15.0, now);
+        engine.ProcessClientReading(-20.0);
+
+        Assert.IsFalse(engine.HasSoundIssue, "Sound issue should clear immediately when OBS audio is detected before retry timeout");
+        Assert.IsTrue(lastEventVal == false, "SoundIssueChanged event should fire immediately with false");
+        Assert.IsNull(engine.LastAudioIssueTime);
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_SoundIssue_ClearedImmediatelyOnSuppressionBeforeTimeout()
+    {
+        var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);
+        using var engine = new AudioCorrelationEngine(silenceDetector: silenceDetector, retryTimeoutSeconds: 10);
+
+        // Trigger sound issue
+        engine.ProcessClientReading(-20.0);
+        Assert.IsTrue(engine.HasSoundIssue);
+
+        // Mute OBS device -> suppresses sound issue immediately
+        engine.UpdateSuppressionStates(obsDeviceDisconnected: false, obsDeviceMuted: true);
+        Assert.IsFalse(engine.HasSoundIssue, "Sound issue should clear immediately when suppression activates");
+
+        // Unmute OBS device within timeout -> alert restores
+        engine.UpdateSuppressionStates(obsDeviceDisconnected: false, obsDeviceMuted: false);
+        Assert.IsTrue(engine.HasSoundIssue, "Sound issue should restore upon unmuting within retry timeout");
+    }
+
+    [TestMethod]
+    public async Task AudioCorrelationEngine_RuntimeAdjustmentOfRetryTimeout_AppliesImmediately()
+    {
+        var silenceDetector = new ConditionalSilenceDetector(consecutiveReadingsRequired: 1);
+        using var engine = new AudioCorrelationEngine(silenceDetector: silenceDetector, retryTimeoutSeconds: 10);
+
+        // Trigger sound issue with 10-second timeout
+        engine.ProcessClientReading(-20.0);
+        Assert.IsTrue(engine.HasSoundIssue);
+
+        // Wait 1.1s (well below 10s timeout, alert is still active)
+        await Task.Delay(1100);
+        Assert.IsTrue(engine.HasSoundIssue, "Alert should still be active under 10s timeout");
+
+        // User reduces timeout in settings to 1s -> should expire immediately since >1.1s has elapsed
+        engine.SetRetryTimeout(1);
+        Assert.AreEqual(1, engine.RetryTimeoutSeconds);
+
+        Assert.IsFalse(engine.HasSoundIssue, "Alert should immediately clear upon adjusting timeout to a duration already exceeded");
+        Assert.IsNull(engine.LastAudioIssueTime);
+    }
 }
