@@ -43,7 +43,7 @@ public sealed class PearsonCorrelationEngine
         int maxLagSteps = 25,
         double varianceThreshold = 1.0,
         double minCorrelationThreshold = 0.5,
-        int consecutiveLowCorrCountRequired = 30,
+        int consecutiveLowCorrCountRequired = 10,
         int minLagSteps = -5,
         double toleranceDb = 20.0)
     {
@@ -73,7 +73,7 @@ public sealed class PearsonCorrelationEngine
         }
 
         // Allow correlation calculation as soon as we have enough samples to test lags
-        int minRequired = Math.Max(35, _maxLagSteps + 5);
+        int minRequired = Math.Max(15, _maxLagSteps + 5);
         if (_clientSamples.Count < minRequired || _obsSamples.Count < minRequired)
         {
             return false;
@@ -82,9 +82,20 @@ public sealed class PearsonCorrelationEngine
         var clientArr = _clientSamples.ToArray();
         var obsArr = _obsSamples.ToArray();
 
-        // Calculate client variance
-        double clientMean = CalculateMean(clientArr);
-        double clientVariance = CalculateVariance(clientArr, clientMean);
+        double[] clampedClientArr = new double[clientArr.Length];
+        double[] clampedObsArr = new double[obsArr.Length];
+        for (int i = 0; i < clientArr.Length; i++)
+        {
+            clampedClientArr[i] = Math.Max(-60.0, clientArr[i]);
+        }
+        for (int i = 0; i < obsArr.Length; i++)
+        {
+            clampedObsArr[i] = Math.Max(-60.0, obsArr[i]);
+        }
+
+        // Calculate client variance over clamped samples
+        double clientMean = CalculateMean(clampedClientArr);
+        double clientVariance = CalculateVariance(clampedClientArr, clientMean);
         LastClientVariance = clientVariance;
 
         // If client audio doesn't have enough dynamic variance, decay counter gradually
@@ -102,12 +113,12 @@ public sealed class PearsonCorrelationEngine
             return _isAlertActive;
         }
 
-        // Calculate maximum correlation across minLagSteps..maxLagSteps
+        // Calculate maximum correlation across minLagSteps..maxLagSteps over clamped samples
         double maxR = -1.0;
         int bestLag = 0;
         for (int lag = _minLagSteps; lag <= _maxLagSteps; lag++)
         {
-            double r = CalculateLaggedCorrelation(clientArr, obsArr, lag);
+            double r = CalculateLaggedCorrelation(clampedClientArr, clampedObsArr, lag);
             if (r > maxR)
             {
                 maxR = r;
@@ -116,7 +127,7 @@ public sealed class PearsonCorrelationEngine
         }
 
         LastCalculatedMaxCorrelation = maxR;
-        double meanDiff = CalculateLaggedMeanAbsoluteDifference(clientArr, obsArr, bestLag);
+        double meanDiff = CalculateLaggedDifference(clientArr, obsArr, bestLag, ToleranceDb);
         LastCalculatedDifference = meanDiff;
         HasValidCalculation = true;
 
@@ -267,5 +278,78 @@ public sealed class PearsonCorrelationEngine
         }
 
         return sumDiff / n;
+    }
+
+    public static double CalculateLaggedDifference(double[] client, double[] obs, int lag, double toleranceDb)
+    {
+        int n;
+        int startX = 0;
+        int startY = 0;
+
+        if (lag >= 0)
+        {
+            n = Math.Min(client.Length - lag, obs.Length - lag);
+            startY = lag;
+        }
+        else
+        {
+            n = Math.Min(client.Length + lag, obs.Length + lag);
+            startX = -lag;
+        }
+
+        if (n <= 0) return 0;
+
+        // When tolerance is 0, strict symmetric absolute difference is required
+        if (toleranceDb <= 0.0)
+        {
+            double sum = 0;
+            for (int i = 0; i < n; i++)
+            {
+                sum += Math.Abs(client[startX + i] - obs[startY + i]);
+            }
+            return sum / n;
+        }
+
+        // Active samples: client active (> -60.0 dBFS)
+        int activeCount = 0;
+        double sumAttenuation = 0;
+        double sumAbsDiff = 0;
+
+        for (int i = 0; i < n; i++)
+        {
+            double c = client[startX + i];
+            double o = obs[startY + i];
+
+            sumAbsDiff += Math.Abs(c - o);
+
+            if (c > -60.0)
+            {
+                activeCount++;
+
+                if (o < -60.0)
+                {
+                    // OBS is below the -60 dBFS silence floor while client is active (> -60 dBFS).
+                    // Treat silent OBS sample as full signal loss rather than minor attenuation.
+                    sumAttenuation += Math.Max(c - o, c - (-100.0));
+                }
+                else if (o >= c || (c >= -25.0 && o >= -15.0))
+                {
+                    // OBS is louder than client (positive gain offset) or clamped at an OBS limiter ceiling
+                    sumAttenuation += 0.0;
+                }
+                else
+                {
+                    // Attenuation: how much quieter OBS is than client
+                    sumAttenuation += (c - o);
+                }
+            }
+        }
+
+        if (activeCount == 0)
+        {
+            return sumAbsDiff / n;
+        }
+
+        return sumAttenuation / activeCount;
     }
 }
