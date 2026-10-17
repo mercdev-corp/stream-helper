@@ -11,6 +11,8 @@ public sealed class AudioCorrelationEngine : IDisposable
 
     private readonly List<(long TimestampMs, double RmsDbfs)> _obsMeterHistory = new();
     private const int MaxHistoryRetentionMs = 20000;
+    private double? _clockOffsetMs;
+    private DateTime _lastPacketTime = DateTime.MinValue;
 
     private double _latestObsRmsDbfs = -100.0;
     private DateTime _lastObsMeterTime = DateTime.MinValue;
@@ -173,7 +175,10 @@ public sealed class AudioCorrelationEngine : IDisposable
             {
                 _simpleDetection = simpleMode;
                 modeChanged = true;
+                _silenceDetector.Reset();
                 _correlationEngine.Reset();
+                _lastAudioIssueTime = null;
+                DisarmExpirationTimerLocked();
             }
         }
 
@@ -261,7 +266,17 @@ public sealed class AudioCorrelationEngine : IDisposable
                 _obsMeterHistory.RemoveRange(0, removeCount);
             }
 
-            if (_hasSoundIssue && rmsDbfs >= _silenceDetector.ObsSilenceThresholdDbfs)
+            if (rmsDbfs >= _silenceDetector.ObsSilenceThresholdDbfs)
+            {
+                _silenceDetector.Reset();
+                if (_hasSoundIssue)
+                {
+                    _lastAudioIssueTime = null;
+                    DisarmExpirationTimerLocked();
+                    shouldEvaluate = true;
+                }
+            }
+            else if (_hasSoundIssue)
             {
                 shouldEvaluate = true;
             }
@@ -277,41 +292,31 @@ public sealed class AudioCorrelationEngine : IDisposable
     {
         lock (_lock)
         {
-            if (_lastObsMeterTime == DateTime.MinValue || (DateTime.UtcNow - _lastObsMeterTime) > TimeSpan.FromMilliseconds(1500))
-            {
-                return -100.0;
-            }
-            return _latestObsRmsDbfs;
+            return GetCurrentObsRmsLocked();
         }
+    }
+
+    private double GetCurrentObsRmsLocked()
+    {
+        if (_lastObsMeterTime == DateTime.MinValue || (DateTime.UtcNow - _lastObsMeterTime) > TimeSpan.FromMilliseconds(1500))
+        {
+            return -100.0;
+        }
+        return _latestObsRmsDbfs;
     }
 
     // Direct in-memory feed for Single-PC mode (called per 100ms reading)
     public void ProcessClientReading(double clientRmsDbfs, long? sampleTimeMs = null)
     {
         long timeMs = sampleTimeMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        double obsSilenceRms;
-        double obsCorrRms;
-        lock (_lock)
-        {
-            obsSilenceRms = ResolveObsRmsForSilenceDetection(timeMs);
-            obsCorrRms = ResolveObsRmsAtTime(timeMs);
-        }
-
-        _silenceDetector.ProcessReading(clientRmsDbfs, obsSilenceRms);
+        bool anyReadingConfirmed = false;
 
         lock (_lock)
         {
-            if (!_simpleDetection)
-            {
-                _correlationEngine.AddSamples(clientRmsDbfs, obsCorrRms);
-            }
+            ProcessSingleSampleLocked(clientRmsDbfs, timeMs, ref anyReadingConfirmed);
         }
 
-        bool activeReadingConfirmed = _simpleDetection
-            ? _silenceDetector.IsActivelyConfirmingIssue
-            : (_silenceDetector.IsActivelyConfirmingIssue || _correlationEngine.IsActivelyConfirmingIssue);
-
-        if (activeReadingConfirmed)
+        if (anyReadingConfirmed)
         {
             lock (_lock)
             {
@@ -328,38 +333,45 @@ public sealed class AudioCorrelationEngine : IDisposable
         if (packet.Readings == null || packet.Readings.Length == 0) return;
 
         int count = packet.Readings.Length;
+        DateTime nowUtc = DateTime.UtcNow;
         long serverNowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-        // If packet timestamp is reasonable and closely synchronized with server time (within 3s),
-        // use it to align samples; otherwise map readings relative to server arrival time
-        // to prevent cross-machine clock drift from desynchronizing meters.
-        long baseTimeMs = (packet.TimestampUnixMs > 0 && Math.Abs(serverNowMs - packet.TimestampUnixMs) <= 3000)
-            ? packet.TimestampUnixMs
-            : serverNowMs;
+        bool anyPacketConfirmed = false;
 
         lock (_lock)
         {
+            long referenceTimeMs = serverNowMs;
+            if (_obsMeterHistory.Count > 0 && Math.Abs(_obsMeterHistory[^1].TimestampMs - serverNowMs) > 60000)
+            {
+                referenceTimeMs = _obsMeterHistory[^1].TimestampMs;
+            }
+
+            long rawOffsetMs = referenceTimeMs - packet.TimestampUnixMs;
+            if (!_clockOffsetMs.HasValue || (nowUtc - _lastPacketTime) > TimeSpan.FromSeconds(10) || Math.Abs(rawOffsetMs - _clockOffsetMs.Value) > 5000)
+            {
+                _clockOffsetMs = rawOffsetMs;
+            }
+            else
+            {
+                _clockOffsetMs = (_clockOffsetMs.Value * 0.8) + (rawOffsetMs * 0.2);
+            }
+            _lastPacketTime = nowUtc;
+
+            long effectiveOffsetMs = (long)Math.Round(_clockOffsetMs.Value);
+            long baseTimeMs = packet.TimestampUnixMs + effectiveOffsetMs;
+            if (Math.Abs(referenceTimeMs - serverNowMs) <= 60000 && baseTimeMs > serverNowMs)
+            {
+                baseTimeMs = serverNowMs;
+            }
+
             for (int i = 0; i < count; i++)
             {
                 double reading = packet.Readings[i];
                 long sampleTimeMs = baseTimeMs - (long)((count - 1 - i) * 100);
-
-                double obsSilenceRms = ResolveObsRmsForSilenceDetection(sampleTimeMs);
-                double obsCorrRms = ResolveObsRmsAtTime(sampleTimeMs);
-
-                _silenceDetector.ProcessReading(reading, obsSilenceRms);
-                if (!_simpleDetection)
-                {
-                    _correlationEngine.AddSamples(reading, obsCorrRms);
-                }
+                ProcessSingleSampleLocked(reading, sampleTimeMs, ref anyPacketConfirmed);
             }
         }
 
-        bool activePacketConfirmed = _simpleDetection
-            ? _silenceDetector.IsActivelyConfirmingIssue
-            : (_silenceDetector.IsActivelyConfirmingIssue || _correlationEngine.IsActivelyConfirmingIssue);
-
-        if (activePacketConfirmed)
+        if (anyPacketConfirmed)
         {
             lock (_lock)
             {
@@ -370,20 +382,31 @@ public sealed class AudioCorrelationEngine : IDisposable
         EvaluateSoundIssue();
     }
 
-    private double ResolveObsRmsForSilenceDetection(long sampleTimeMs)
+    private void ProcessSingleSampleLocked(double clientRmsDbfs, long sampleTimeMs, ref bool anyReadingConfirmed)
     {
-        if (_lastObsMeterTime == DateTime.MinValue || (DateTime.UtcNow - _lastObsMeterTime) > TimeSpan.FromMilliseconds(1500))
+        double obsSilenceRms = ResolveObsRmsForSilenceDetectionLocked(sampleTimeMs);
+        double obsCorrRms = ResolveObsRmsAtTimeLocked(sampleTimeMs);
+
+        _silenceDetector.ProcessReading(clientRmsDbfs, obsSilenceRms);
+
+        if (!_simpleDetection)
         {
-            return -100.0;
+            _correlationEngine.AddSamples(clientRmsDbfs, obsCorrRms);
         }
 
-        if (_obsMeterHistory.Count == 0)
-        {
-            return GetCurrentObsRms();
-        }
+        bool confirmed = _simpleDetection
+            ? _silenceDetector.IsActivelyConfirmingIssue
+            : (_silenceDetector.IsActivelyConfirmingIssue || _correlationEngine.IsActivelyConfirmingIssue);
 
-        // Check OBS reading at sampleTimeMs
-        double currentObsRms = ResolveObsRmsAtTime(sampleTimeMs);
+        if (confirmed)
+        {
+            anyReadingConfirmed = true;
+        }
+    }
+
+    private double ResolveObsRmsForSilenceDetectionLocked(long sampleTimeMs)
+    {
+        double currentObsRms = ResolveObsRmsAtTimeLocked(sampleTimeMs);
         if (currentObsRms >= _silenceDetector.ObsSilenceThresholdDbfs)
         {
             return currentObsRms;
@@ -395,9 +418,18 @@ public sealed class AudioCorrelationEngine : IDisposable
             return currentObsRms;
         }
 
+        if (_lastObsMeterTime == DateTime.MinValue || (DateTime.UtcNow - _lastObsMeterTime) > TimeSpan.FromMilliseconds(1500))
+        {
+            return -100.0;
+        }
+
+        if (_obsMeterHistory.Count == 0)
+        {
+            return currentObsRms;
+        }
+
         long windowEndMs = sampleTimeMs + lagWindowMs;
 
-        // Search forward across (sampleTimeMs, sampleTimeMs + lagWindow]
         double maxRmsInWindow = currentObsRms;
         for (int i = _obsMeterHistory.Count - 1; i >= 0; i--)
         {
@@ -422,7 +454,7 @@ public sealed class AudioCorrelationEngine : IDisposable
         return maxRmsInWindow;
     }
 
-    private double ResolveObsRmsAtTime(long sampleTimeMs)
+    private double ResolveObsRmsAtTimeLocked(long sampleTimeMs)
     {
         if (_lastObsMeterTime == DateTime.MinValue || (DateTime.UtcNow - _lastObsMeterTime) > TimeSpan.FromMilliseconds(1500))
         {
@@ -431,7 +463,7 @@ public sealed class AudioCorrelationEngine : IDisposable
 
         if (_obsMeterHistory.Count == 0)
         {
-            return GetCurrentObsRms();
+            return GetCurrentObsRmsLocked();
         }
 
         int bestIdx = _obsMeterHistory.Count - 1;
@@ -558,11 +590,13 @@ public sealed class AudioCorrelationEngine : IDisposable
 
         bool silenceIssue = _silenceDetector.IsAlertActive;
         bool correlationIssue = !simpleMode && _correlationEngine.IsAlertActive;
+        bool obsHasAudio = GetCurrentObsRms() >= _silenceDetector.ObsSilenceThresholdDbfs;
 
         if (!simpleMode)
         {
             // Full mode: verified correlation suppresses spurious silence alerts
-            if (_correlationEngine.HasValidCalculation &&
+            // ONLY when correlation engine has valid calculation AND OBS actually has non-silent audio!
+            if (_correlationEngine.HasValidCalculation && obsHasAudio &&
                 (_correlationEngine.LastCalculatedMaxCorrelation >= _correlationEngine.MinCorrelationThreshold ||
                  _correlationEngine.LastCalculatedDifference <= _correlationEngine.ToleranceDb))
             {
@@ -571,7 +605,6 @@ public sealed class AudioCorrelationEngine : IDisposable
         }
 
         bool issueAlertActive = simpleMode ? silenceIssue : (silenceIssue || correlationIssue);
-        bool obsHasAudio = GetCurrentObsRms() >= _silenceDetector.ObsSilenceThresholdDbfs;
         bool matchingObsAudio = obsHasAudio && (simpleMode || !_correlationEngine.IsAlertActive);
 
         if (matchingObsAudio && !issueAlertActive)
@@ -650,6 +683,8 @@ public sealed class AudioCorrelationEngine : IDisposable
             _latestObsRmsDbfs = -100.0;
             _lastObsMeterTime = DateTime.MinValue;
             _obsMeterHistory.Clear();
+            _clockOffsetMs = null;
+            _lastPacketTime = DateTime.MinValue;
             _hasSoundIssue = false;
             _isNotInActiveScene = false;
             _lastAudioIssueTime = null;

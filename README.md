@@ -177,17 +177,18 @@ Dropdown list of available audio capture devices from OBS Studio. Shows the curr
 
 Defaults to `1.0` second (adjustable between `0.0`s and `3.0`s in `0.1`s increments).
 
-Slider with a real-time value label that sets the forward search window $[T, T + \text{lagWindow}]$ when evaluating OBS audio meters for silence detection. Compensates for OBS audio buffering, filter chains (noise suppression, compressors), and capture pipeline latency:
+Slider with a real-time value label that sets the forward search window $[T, T + \text{lagWindow}]$ when evaluating OBS audio meters for silence detection. Compensates for OBS audio buffering, filter chains (noise suppression, compressors), HDMI capture card delays, and capture pipeline latency:
 - When game audio is actively playing at time $T$, the engine checks for non-silent OBS audio across $[T, T + \text{lagWindow}]$ before flagging a silence alert, eliminating false alarms caused by delay between the game and OBS.
 - Dynamically scales Pearson cross-correlation lag steps to search the full configured lag window duration.
 - Remains active and applies to both **Simple audio issue detection** and **Full cross-correlation** modes.
-- Changes are applied live to the monitoring engine and saved immediately to settings.
+- Changes are applied live to the active monitoring engine and saved immediately to settings.
 
 ##### Simple audio issue detection
 
 Checkbox to toggle simplified game audio verification mode (default: disabled / unchecked).
 - When enabled, Pearson cross-correlation analysis is skipped entirely, and audio monitoring relies exclusively on the conditional silence detector (alerting only when game audio is actively playing on the gaming PC while the OBS capture source remains silent).
 - Disables the **Audio match tolerance** slider and displays it visually at maximum (`40 dB`).
+- Toggling Simple audio issue detection on or off immediately resets the conditional silence detector, Pearson correlation engine, and active issue timestamps in both Single-PC and Dual-PC modes.
 - When unchecked / disabled, the user's previously configured tolerance value is automatically restored.
 - Changes are applied live to the monitoring engine and persisted immediately to settings.
 
@@ -195,7 +196,7 @@ Checkbox to toggle simplified game audio verification mode (default: disabled / 
 
 Defaults to `20 dB` (adjustable between `0 dB` and `40 dB` in 5 dB increments).
 
-Slider with a real-time dB label that sets the mean absolute RMS difference allowed between the gaming PC output and OBS capture at the best correlation lag. If Pearson correlation drops below threshold ($r < 0.5$) due to volume level offsets, compression, or downmixing, but the average volume difference remains within this tolerance, false alarms are prevented. A mismatch alert is only raised when correlation is low *and* volume difference exceeds this tolerance. Changes are saved to settings and applied immediately.
+Slider with a real-time dB label that sets the directional attenuation difference allowed between the gaming PC output and OBS capture at the best correlation lag. A mismatch alert is only raised when correlation is low ($r < 0.5$) *and* OBS is attenuated below the gaming PC signal by more than this tolerance. Positive gain offsets (where OBS is louder than the PC) and OBS brickwall limiter ceilings (e.g. during combat gunshots) do not trigger false alerts. Changes are saved to settings and applied immediately.
 
 ##### Retry timeout
 
@@ -223,7 +224,7 @@ The server checks for OBS availability periodically using a single-flight reconn
 
 #### Paused state
 
-When the server is in a paused state, it stops monitoring OBS and audio devices, suspends all active OBS reconnection loops, disconnects all connected clients, and displays the `paused` status icon in the system tray (hover tooltip: `Helper is paused`). Resuming monitoring unpauses broadcasting and cleanly restarts OBS and microphone connection monitoring.
+When the server is in a paused state, it stops monitoring OBS and audio devices, suspends all active OBS reconnection loops, disconnects all connected clients, cleanly resets correlation engine state, and displays the `paused` status icon in the system tray (hover tooltip: `Helper is paused`). Resuming monitoring unpauses broadcasting and cleanly restarts OBS and microphone connection monitoring.
 
 #### Active state
 
@@ -247,21 +248,24 @@ In addition to basic audio capture statuses, the server also monitors and compar
 > [!NOTE]
 > **Alert Suppression:** If the microphone or audio capture device is disconnected, muted, or not present in the active OBS scene, algorithmic correlation anomaly alerts (`sound issue`) are suppressed to avoid redundant or false alarms.
 
-1. **On the Gaming PC:** A lightweight background worker uses `WASAPI Loopback Capture` to monitor the default audio output device (or the dedicated audio interface assigned to the game). It computes RMS (root-mean-square volume in dBFS) and peak values in **100ms sub-sampling windows** (10 Hz). If the Gaming PC does not send this telemetry, the server treats it as silence on the client side and does not trigger false alerts.
-2. **Network Transmission:** The worker batches these 100ms readings into a single compact UDP packet sent to the Server once per second: `[timestamp_ms, [rms_db_0, rms_db_1, ... rms_db_9]]`.
+1. **On the Gaming PC:** A lightweight background worker uses `WASAPI Loopback Capture` to monitor the default audio output device (or the dedicated audio interface assigned to the game). It computes RMS (root-mean-square volume in dBFS) and peak values in **100ms sub-sampling windows** (10 Hz). If the Gaming PC does not send this telemetry, the server treats it as silence on the client side and does not trigger false alerts. Pausing the client or disabling Game Audio Monitoring immediately ceases telemetry transmission and resets the local correlation engine.
+2. **Network Transmission & Clock Offset Alignment (Dual-PC):**
+   * The worker batches these 100ms readings into a single compact UDP packet sent to the Server once per second: `[timestamp_ms, [rms_db_0, rms_db_1, ... rms_db_9]]`.
+   * The Server continuously estimates and tracks the Client-to-Server clock offset using an exponential moving average (EMA) filter. Incoming sample timestamps are dynamically mapped onto the Server's clock timeline, ensuring cross-machine clock skew (e.g., 1–3 seconds or more) does not shift client telemetry relative to OBS meter history.
+   * In Single-PC mode, client readings feed directly into the shared in-memory pipeline without UDP networking.
 3. **On the OBS Side:** OBS WebSocket v5 natively provides the `InputVolumeMeters` event subscription (`EventSubscription::InputVolumeMeters`). OBS periodically emits current volume levels (peak and RMS) for each configured audio input without requiring custom audio capture plugins.
 4. **Comparison & Anomaly Detection:**
   * **Conditional Silence Detector (covers ~95% of real-world failures):**
-    * If the Gaming PC detects active audio (`RMS > -48.0 dBFS`) continuously for 3–5 seconds while the corresponding audio source in OBS remains below the silence threshold (`RMS < -60.0 dBFS`) across the forward lag compensation window $[T, T + \text{lagWindow}]$, the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
-    * The restored 12 dB hysteresis gap (`-48.0 dBFS` active vs `-60.0 dBFS` silence) prevents false positives during quiet ambient gameplay scenes, dialogue with low master volume, or scenes where OBS capture is moderately attenuated relative to system output.
-    * If the game itself is quiet (e.g., loading screens, pause menus, stealth sequences), the condition is not met, preventing false positives.
-  * **Cross-Correlation & Audio Match Tolerance:**
-    * To verify that the audio captured by OBS actually matches the game output, maintain a rolling time-series window (e.g., 10 seconds / 100 samples at 100ms resolution).
-    * Calculate Pearson's correlation coefficient between the Gaming PC and OBS RMS series across the dynamically scaled lag range (up to the configured **Audio lag compensation window**, e.g., 0 to 3.0 seconds in 100 ms steps), and evaluate the mean absolute RMS difference at the best lag.
-    * If the audio on the Gaming PC exhibits significant dynamic variation (high RMS variance) while correlation remains low ($r < 0.5$) **and** the mean absolute difference exceeds the configured **Audio match tolerance** (default `20 dB`, range `0`–`40 dB`), the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover. Verified strong correlation ($r \ge 0.5$) suppresses spurious silence alerts in full mode.
+    * If the Gaming PC detects active audio (`RMS > -60.0 dBFS`, including quieter in-game sounds such as footsteps at `-48` to `-55 dBFS` or UI sounds at `-56 dBFS`) continuously for 1 second (10 readings at 100ms) while the corresponding audio source in OBS remains below the silence threshold (`RMS < -60.0 dBFS`) across the forward lag compensation window $[T, T + \text{lagWindow}]$, the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
+    * **Immediate Recovery on OBS Audio:** The detector checks for non-silent OBS audio (`RMS >= -60.0 dBFS`) *first*, before evaluating client volume. Whenever OBS captures non-silent audio, the silence counter is immediately reset to 0 and any active silence alert is cleared—even if the gaming PC audio is currently quiet (`RMS <= -60.0 dBFS`).
+    * If the game itself is silent (`RMS <= -60.0 dBFS`) while OBS is also silent, alert generation is suppressed, the counter decays (`-2` per silent reading), and isolated single-reading spikes after silent periods do not re-latch active issue confirmation, while continuous audio with brief 100ms micro-gaps still accumulates and triggers once 1 second of net active audio is reached.
+  * **Limiter-, Gain-Offset-, and Silence-Floor-Resilient Full Mode (`PearsonCorrelationEngine`):**
+    * Digital silence floors are clamped at `-60.0 dBFS` when calculating Pearson correlation and variance over active signals, preventing extreme mathematical artifacts from nominal zero-level audio.
+    * Directional attenuation tolerance: when correlation is low ($r < 0.5$)—such as with high-gain OBS filters or brickwall limiters—the engine flags an issue after 1 second (10 readings) if OBS is quieter than the Gaming PC by more than the configured **Audio match tolerance** (default `20 dB`) or if OBS captures complete silence (`RMS < -60.0 dBFS`) while the Gaming PC produces active audio (`RMS > -60.0 dBFS`, treated as full signal loss relative to the `-100.0 dBFS` floor so quieter sounds like footsteps are never masked by the tolerance dB setting). If OBS is louder than the Gaming PC (positive gain offsets, e.g. $+12$ to $+20\text{ dB}$ in Escape from Tarkov profiles) or clamped against an OBS Limiter ceiling (e.g. $\ge -15\text{ dBFS}$ during loud combat gunshots), it is recognized as normal audio capture and does not trigger false alerts.
+    * Verified strong correlation ($r \ge 0.5$) or difference within tolerance only suppresses silence alerts when OBS actually captures non-silent audio (`RMS >= -60.0 dBFS`).
     * If **Simple audio issue detection** is enabled, Pearson cross-correlation is completely bypassed/reset, and anomaly detection relies solely on the Conditional Silence Detector with lag compensation.
   * **Sound Issue Alert Expiration on Retry Timeout:**
-    * When a sound issue condition is confirmed (via conditional silence detection or cross-correlation mismatch), the audio correlation engine records the detection timestamp.
+    * When a sound issue condition is actively confirmed (via conditional silence detection or cross-correlation mismatch), the audio correlation engine records the detection timestamp. Brief single-reading spikes following quiet periods do not refresh the timestamp.
     * The active `sound issue` alert state remains active only during the configured **Retry timeout** duration (default `5` seconds, range `1`–`300` seconds).
     * If the issue is not re-confirmed within the retry timeout period (such as during quiet gameplay, pause menus, desktop idle, or source silence where loopback telemetry ceases), the alert automatically expires and clears, avoiding persistent false alarms.
     * Repeated issue detections continuously refresh the detection timestamp and extend the active alert duration.

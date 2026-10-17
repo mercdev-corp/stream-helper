@@ -84,27 +84,78 @@ public sealed class AudioTelemetryAndCorrelationTests
     }
 
     [TestMethod]
-    public void ConditionalSilenceDetector_DefaultThresholds_RestoresHysteresisGapAndSuppressesLowVolumeScene()
+    public void ConditionalSilenceDetector_DefaultThresholds_DetectsAboveMinus60dBInOneSecond()
     {
         var detector = new ConditionalSilenceDetector();
-        Assert.AreEqual(-48.0, detector.ClientActiveThresholdDbfs, 0.001);
+        Assert.AreEqual(-60.0, detector.ClientActiveThresholdDbfs, 0.001);
         Assert.AreEqual(-60.0, detector.ObsSilenceThresholdDbfs, 0.001);
+        Assert.AreEqual(10, detector.ConsecutiveReadingsRequired);
 
-        // Low-volume scene: client active at -46.0 dBFS, OBS slightly attenuated at -52.0 dBFS
+        // Low-volume scene: client active at -52.0 dBFS, OBS also capturing at -52.0 dBFS
         // Since -52.0 >= -60.0 dBFS, it should not trigger silence alert despite client being active
-        for (int i = 0; i < 40; i++)
+        for (int i = 0; i < 20; i++)
         {
-            Assert.IsFalse(detector.ProcessReading(-46.0, -52.0));
+            Assert.IsFalse(detector.ProcessReading(-52.0, -52.0));
         }
         Assert.IsFalse(detector.IsAlertActive);
 
-        // True silence in OBS: OBS drops to -65.0 dBFS (< -60.0 dBFS)
-        for (int i = 0; i < 29; i++)
+        // True silence in OBS during quiet footsteps (-52.0 dBFS > -60.0 dBFS, OBS at -65.0 dBFS < -60.0 dBFS)
+        // Triggers on the 10th reading (1.0 second)
+        for (int i = 0; i < 9; i++)
         {
-            Assert.IsFalse(detector.ProcessReading(-46.0, -65.0));
+            Assert.IsFalse(detector.ProcessReading(-52.0, -65.0));
         }
-        Assert.IsTrue(detector.ProcessReading(-46.0, -65.0));
+        Assert.IsTrue(detector.ProcessReading(-52.0, -65.0));
         Assert.IsTrue(detector.IsAlertActive);
+    }
+
+    [TestMethod]
+    public void ConditionalSilenceDetector_ObsCapturesAudioWhileClientQuiet_ClearsAlertImmediately()
+    {
+        var detector = new ConditionalSilenceDetector(clientActiveThresholdDbfs: -60.0, obsSilenceThresholdDbfs: -60.0, consecutiveReadingsRequired: 10);
+
+        // Trigger silence alert: 10 readings of active client (-20 dBFS) and silent OBS (-75 dBFS)
+        for (int i = 0; i < 10; i++)
+        {
+            detector.ProcessReading(-20.0, -75.0);
+        }
+        Assert.IsTrue(detector.IsAlertActive);
+        Assert.IsTrue(detector.IsActivelyConfirmingIssue);
+
+        // Post-fight quiet client (-65 dBFS) while OBS captures audio (-36 dBFS >= -60 dBFS)
+        // Must clear alert and reset immediately on reading 1 without requiring decay readings
+        bool alertStillActive = detector.ProcessReading(-65.0, -36.0);
+        Assert.IsFalse(alertStillActive, "Alert should clear immediately when OBS captures sound even during quiet client audio");
+        Assert.IsFalse(detector.IsAlertActive);
+        Assert.IsFalse(detector.IsActivelyConfirmingIssue);
+    }
+
+    [TestMethod]
+    public void ConditionalSilenceDetector_IsActivelyConfirmingIssue_QuietReadingsDecayByTwoAndSingleSpikeDoesNotRelatch()
+    {
+        var detector = new ConditionalSilenceDetector(clientActiveThresholdDbfs: -60.0, obsSilenceThresholdDbfs: -60.0, consecutiveReadingsRequired: 10);
+
+        // 10 readings -> triggers alert and sets IsActivelyConfirmingIssue
+        for (int i = 0; i < 10; i++)
+        {
+            detector.ProcessReading(-48.0, -75.0);
+        }
+        Assert.IsTrue(detector.IsAlertActive);
+        Assert.IsTrue(detector.IsActivelyConfirmingIssue);
+
+        // Quiet reading (<= -60.0 dBFS, e.g. -65 dBFS, OBS -75 dBFS) decays count by 2 (10 -> 8)
+        detector.ProcessReading(-65.0, -75.0);
+        Assert.IsTrue(detector.IsAlertActive, "Alert should remain latched during initial decay");
+        Assert.IsFalse(detector.IsActivelyConfirmingIssue, "Quiet reading must not report active issue confirmation");
+
+        // Single active reading spike after quiet reading (-48 dBFS, OBS -75 dBFS) increments 8 -> 9 (< 10)
+        detector.ProcessReading(-48.0, -75.0);
+        Assert.IsTrue(detector.IsAlertActive);
+        Assert.IsFalse(detector.IsActivelyConfirmingIssue, "Single active reading spike after quiet period must not re-latch active confirmation");
+
+        // Second consecutive active reading (9 -> 10) restores full threshold and re-confirms active issue
+        detector.ProcessReading(-48.0, -75.0);
+        Assert.IsTrue(detector.IsActivelyConfirmingIssue, "Continuous active audio after brief micro-gap should re-confirm once threshold is reached");
     }
 
     [TestMethod]
@@ -904,5 +955,272 @@ public sealed class AudioTelemetryAndCorrelationTests
 
         Assert.IsFalse(engine.HasSoundIssue, "Alert should immediately clear upon adjusting timeout to a duration already exceeded");
         Assert.IsNull(engine.LastAudioIssueTime);
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_EscapeFromTarkov_CombatAndPostCombatLooting_DoesNotFalseAlarm_FullMode_DualPc()
+    {
+        // Full mode with default tolerance 20 dB, lag window 1.0s, and simulated 2.5s clock skew
+        var engine = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: false, lagWindowSeconds: 1.0);
+        long clientClockOffsetMs = 2500;
+        var baseUtc = DateTime.UtcNow;
+        long serverBaseMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+        var rnd = new Random(789);
+
+        // Phase 1: Moving through bushes (+20 dB gain offset: PC -34 dBFS, OBS -14 dBFS)
+        for (int p = 1; p <= 5; p++)
+        {
+            var readings = new float[10];
+            for (int i = 0; i < 10; i++)
+            {
+                readings[i] = (float)(-34.0 + (rnd.NextDouble() * 3.0 - 1.5));
+                long meterTimeMs = serverBaseMs + ((p - 1) * 1000) + (i * 100);
+                engine.IngestObsAudioMeter(readings[i] + 20.0, readings[i] + 25.0, DateTimeOffset.FromUnixTimeMilliseconds(meterTimeMs).UtcDateTime);
+            }
+
+            long clientPacketTs = serverBaseMs + (p * 1000) - clientClockOffsetMs;
+            engine.ProcessTelemetryPacket(new AudioTelemetryPacket
+            {
+                SequenceNumber = (ulong)p,
+                TimestampUnixMs = clientPacketTs,
+                Readings = readings
+            });
+
+            Assert.IsFalse(engine.HasSoundIssue, $"Phase 1 (Bushes): Packet {p} should not trigger sound issue");
+        }
+
+        // Phase 2: Loud gunfire burst with OBS Limiter filter clamping at -8.4 dBFS
+        // Client: -14 dBFS with high variance; OBS: -8.4 dBFS (limiter ceiling)
+        for (int p = 6; p <= 12; p++)
+        {
+            var readings = new float[10];
+            for (int i = 0; i < 10; i++)
+            {
+                readings[i] = (float)(-14.0 + (rnd.NextDouble() * 5.0 - 2.5));
+                long meterTimeMs = serverBaseMs + ((p - 1) * 1000) + (i * 100);
+                // OBS limiter clamps all gunfire peaks to -8.4 dBFS
+                engine.IngestObsAudioMeter(-8.4, -8.0, DateTimeOffset.FromUnixTimeMilliseconds(meterTimeMs).UtcDateTime);
+            }
+
+            long clientPacketTs = serverBaseMs + (p * 1000) - clientClockOffsetMs;
+            engine.ProcessTelemetryPacket(new AudioTelemetryPacket
+            {
+                SequenceNumber = (ulong)p,
+                TimestampUnixMs = clientPacketTs,
+                Readings = readings
+            });
+
+            Assert.IsFalse(engine.HasSoundIssue, $"Phase 2 (Gunfire Limiter): Packet {p} should not trigger sound issue");
+        }
+
+        // Phase 3: Post-combat quiet: Footsteps at -48 dBFS and looting UI at -56 dBFS
+        // Client audio drops below active threshold, OBS captures at -36 dBFS (due to +12..+20dB gain)
+        for (int p = 13; p <= 18; p++)
+        {
+            var readings = new float[10];
+            for (int i = 0; i < 10; i++)
+            {
+                readings[i] = (i % 2 == 0) ? -48.0f : -56.0f;
+                long meterTimeMs = serverBaseMs + ((p - 1) * 1000) + (i * 100);
+                engine.IngestObsAudioMeter(-36.0, -32.0, DateTimeOffset.FromUnixTimeMilliseconds(meterTimeMs).UtcDateTime);
+            }
+
+            long clientPacketTs = serverBaseMs + (p * 1000) - clientClockOffsetMs;
+            engine.ProcessTelemetryPacket(new AudioTelemetryPacket
+            {
+                SequenceNumber = (ulong)p,
+                TimestampUnixMs = clientPacketTs,
+                Readings = readings
+            });
+
+            Assert.IsFalse(engine.HasSoundIssue, $"Phase 3 (Post-combat quiet): Packet {p} should not trigger sound issue");
+        }
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_EscapeFromTarkov_CombatAndPostCombatLooting_DoesNotFalseAlarm_SimpleMode_SinglePc()
+    {
+        // Simple mode direct Single-PC readings with lag window 1.0s
+        var engine = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: true, lagWindowSeconds: 1.0);
+        var baseUtc = DateTime.UtcNow;
+        var rnd = new Random(101);
+
+        // Sequence: UI (-56 PC / -36 OBS), Footsteps (-48 PC / -36 OBS), Bushes (-34 PC / -14 OBS), Gunshots (-14 PC / -8.4 OBS limiter)
+        for (int i = 0; i < 60; i++)
+        {
+            double pcRms;
+            double obsRms;
+
+            if (i < 15)
+            {
+                // UI & Footsteps
+                pcRms = (i % 2 == 0) ? -48.0 : -56.0;
+                obsRms = -36.0;
+            }
+            else if (i < 30)
+            {
+                // Bushes
+                pcRms = -34.0 + (rnd.NextDouble() * 2.0 - 1.0);
+                obsRms = -14.0;
+            }
+            else
+            {
+                // Gunshots clamped by limiter
+                pcRms = -14.0 + (rnd.NextDouble() * 4.0 - 2.0);
+                obsRms = -8.4;
+            }
+
+            var time = baseUtc.AddMilliseconds(i * 100);
+            engine.IngestObsAudioMeter(obsRms, obsRms + 3.0, time);
+            engine.ProcessClientReading(pcRms, new DateTimeOffset(time).ToUnixTimeMilliseconds());
+
+            Assert.IsFalse(engine.HasSoundIssue, $"Step {i} should not trigger sound issue in simple mode");
+        }
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_EscapeFromTarkov_TrueCaptureFailure_TriggersAndRecoversImmediately()
+    {
+        // Full mode: Gunfire occurs on PC (-14 dBFS), but OBS audio capture drops completely silent (-100 dBFS)
+        var engine = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: false, lagWindowSeconds: 1.0);
+        var baseUtc = DateTime.UtcNow;
+        long baseMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+
+        // 3 seconds (30 readings) of active gunfire with silent OBS
+        for (int i = 0; i < 30; i++)
+        {
+            var time = baseUtc.AddMilliseconds(i * 100);
+            long timeMs = baseMs + (i * 100);
+            engine.IngestObsAudioMeter(-100.0, -100.0, time);
+            engine.ProcessClientReading(-14.0, timeMs);
+        }
+
+        Assert.IsTrue(engine.HasSoundIssue, "Sound issue should trigger after 30 readings of active gunfire and silent OBS");
+
+        // Now OBS audio recovers, capturing footsteps/UI (-36 dBFS) while PC is quiet (-48 dBFS)
+        var recoverTime = baseUtc.AddMilliseconds(3100);
+        long recoverTimeMs = baseMs + 3100;
+        engine.IngestObsAudioMeter(-36.0, -30.0, recoverTime);
+        engine.ProcessClientReading(-48.0, recoverTimeMs);
+
+        Assert.IsFalse(engine.HasSoundIssue, "Sound issue should immediately clear when OBS captures audio, even during quiet client audio");
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_DualPc_CrossMachineClockSkew_1500msTo3000ms_AlignsCorrectly()
+    {
+        // Test cross-PC clock skew ranging from 1500ms to 3000ms
+        foreach (int skewMs in new[] { 1500, 2000, 3000, -1500 })
+        {
+            var engine = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: false, lagWindowSeconds: 1.0);
+            var baseUtc = DateTime.UtcNow;
+            long serverBaseMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+            var rnd = new Random(42);
+
+            for (int p = 1; p <= 6; p++)
+            {
+                var readings = new float[10];
+                for (int i = 0; i < 10; i++)
+                {
+                    readings[i] = (float)(-25.0 + rnd.NextDouble() * 10.0);
+                    long meterTimeMs = serverBaseMs + ((p - 1) * 1000) + (i * 100);
+                    engine.IngestObsAudioMeter(readings[i] - 2.0, readings[i], DateTimeOffset.FromUnixTimeMilliseconds(meterTimeMs).UtcDateTime);
+                }
+
+                // Packet timestamp has the clock skew relative to server clock
+                long packetTs = serverBaseMs + (p * 1000) - skewMs;
+                engine.ProcessTelemetryPacket(new AudioTelemetryPacket
+                {
+                    SequenceNumber = (ulong)p,
+                    TimestampUnixMs = packetTs,
+                    Readings = readings
+                });
+
+                Assert.IsFalse(engine.HasSoundIssue, $"Clock skew {skewMs}ms: Packet {p} should not trigger sound issue");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_FootstepsLowerThanMinus30dB_AboveMinus60dB_NoObsCapture_DetectsAfterOneSecond_SinglePc_BothModes()
+    {
+        foreach (bool simpleMode in new[] { false, true })
+        {
+            foreach (int toleranceDb in new[] { 20, 30 })
+            {
+                var engine = new AudioCorrelationEngine(toleranceDb: toleranceDb, simpleMode: simpleMode, lagWindowSeconds: 1.0);
+                var baseUtc = DateTime.UtcNow;
+                long baseMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+
+                // Running footsteps on Gaming PC at -48 dBFS to -56 dBFS (well below -30 dBFS, but above -60 dBFS)
+                // OBS captures nothing (-100 dBFS)
+                for (int i = 0; i < 9; i++)
+                {
+                    var time = baseUtc.AddMilliseconds(i * 100);
+                    long timeMs = baseMs + (i * 100);
+                    double pcFootstepsDb = -48.0 - (i % 4) * 2.0; // -48, -50, -52, -54 dBFS
+                    engine.IngestObsAudioMeter(-100.0, -100.0, time);
+                    engine.ProcessClientReading(pcFootstepsDb, timeMs);
+                    Assert.IsFalse(engine.HasSoundIssue, $"SimpleMode={simpleMode}, Tolerance={toleranceDb}: Should not trigger before 1.0s (reading {i + 1})");
+                }
+
+                // 10th reading (1.0 second continuous footsteps with no OBS capture) -> MUST trigger!
+                var triggerTime = baseUtc.AddMilliseconds(900);
+                engine.IngestObsAudioMeter(-100.0, -100.0, triggerTime);
+                engine.ProcessClientReading(-52.0, baseMs + 900);
+                Assert.IsTrue(engine.HasSoundIssue, $"SimpleMode={simpleMode}, Tolerance={toleranceDb}: Footsteps at -48..-54 dBFS with no OBS capture must trigger after 1.0s (10 readings)");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_FootstepsLowerThanMinus30dB_AboveMinus60dB_NoObsCapture_DetectsInOneSecondPacket_DualPc_BothModes()
+    {
+        foreach (bool simpleMode in new[] { false, true })
+        {
+            var engine = new AudioCorrelationEngine(toleranceDb: 30, simpleMode: simpleMode, lagWindowSeconds: 1.0);
+            var baseUtc = DateTime.UtcNow;
+            long serverBaseMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+
+            // 1 second UDP packet (10 readings at 100ms) of running footsteps (-48 to -55 dBFS) while OBS is silent (-75 dBFS)
+            var readings = new float[10];
+            for (int i = 0; i < 10; i++)
+            {
+                readings[i] = -48.0f - (i % 4) * 2.0f; // -48, -50, -52, -54 dBFS
+                long meterTimeMs = serverBaseMs + (i * 100);
+                engine.IngestObsAudioMeter(-75.0, -72.0, DateTimeOffset.FromUnixTimeMilliseconds(meterTimeMs).UtcDateTime);
+            }
+
+            engine.ProcessTelemetryPacket(new AudioTelemetryPacket
+            {
+                SequenceNumber = 1,
+                TimestampUnixMs = serverBaseMs + 1000,
+                Readings = readings
+            });
+
+            Assert.IsTrue(engine.HasSoundIssue, $"SimpleMode={simpleMode}: Dual-PC 1.0s packet of footsteps (-48..-54 dBFS) with silent OBS must trigger sound issue");
+        }
+    }
+
+    [TestMethod]
+    public void AudioCorrelationEngine_SoundsBelowMinus60dB_DoNotTriggerFalseSoundIssue()
+    {
+        foreach (bool simpleMode in new[] { false, true })
+        {
+            var engine = new AudioCorrelationEngine(toleranceDb: 20, simpleMode: simpleMode, lagWindowSeconds: 1.0);
+            var baseUtc = DateTime.UtcNow;
+            long baseMs = new DateTimeOffset(baseUtc).ToUnixTimeMilliseconds();
+
+            // Sounds at or below -60 dBFS (-60.0 to -75.0 dBFS) for 5 seconds with silent OBS (-100 dBFS)
+            for (int i = 0; i < 50; i++)
+            {
+                var time = baseUtc.AddMilliseconds(i * 100);
+                long timeMs = baseMs + (i * 100);
+                double quietPcDb = -60.0 - (i % 5) * 3.0;
+                engine.IngestObsAudioMeter(-100.0, -100.0, time);
+                engine.ProcessClientReading(quietPcDb, timeMs);
+                Assert.IsFalse(engine.HasSoundIssue, $"SimpleMode={simpleMode}: Client audio <= -60 dBFS must not trigger sound issue at step {i}");
+            }
+        }
     }
 }

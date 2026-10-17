@@ -201,6 +201,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
             _audioMonitor.StopMonitoring();
             _obsMonitor.DisconnectAsync();
             _telemetrySender.Stop();
+            _correlationEngine.Reset();
             _trayCycler.SetState(AlertFlags.None, isPaused: true);
             _overlayForm.SetLiveAlerts(AlertFlags.None, isPaused: true);
             return;
@@ -234,6 +235,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
             else
             {
                 _telemetrySender.Stop();
+                _correlationEngine.Reset();
             }
         }
         else // DualPc
@@ -327,6 +329,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
                 AppLogger.Info($"[Client] Monitoring paused; clearing alerts (was: [{_lastAlerts}]).");
                 _lastAlerts = AlertFlags.None;
             }
+            _correlationEngine.Reset();
             _trayCycler.SetState(AlertFlags.None, isPaused: true);
             _overlayForm.SetLiveAlerts(AlertFlags.None, isPaused: true);
             return;
@@ -542,6 +545,7 @@ public sealed class ClientTrayApplicationContext : ApplicationContext
                         else
                         {
                             _telemetrySender.Stop();
+                            _correlationEngine.Reset();
                         }
                         UpdateAllStates();
                     }

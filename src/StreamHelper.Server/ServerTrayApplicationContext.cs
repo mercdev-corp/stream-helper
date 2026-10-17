@@ -139,6 +139,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
         {
             _menuPauseResume.Text = "Resume";
             _broadcaster.SetPaused(true);
+            _correlationEngine.Reset();
             _trayCycler.SetState(AlertFlags.None, isPaused: true);
         }
         else
@@ -190,6 +191,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
                 _lastAlerts = AlertFlags.None;
             }
             _broadcaster.SetPaused(true);
+            _correlationEngine.Reset();
             _trayCycler.SetState(AlertFlags.None, isPaused: true);
             return;
         }
@@ -256,6 +258,7 @@ public sealed class ServerTrayApplicationContext : ApplicationContext
             _audioMonitor.StopMonitoring();
             _obsMonitor.Stop();
             _telemetryReceiver.Stop();
+            _correlationEngine.Reset();
             _trayCycler.SetState(AlertFlags.None, isPaused: true);
         }
         else
