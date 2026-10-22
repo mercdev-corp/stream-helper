@@ -1,4 +1,4 @@
-# Stream Helper
+# <img src="assets/obs-logo-blue.png" alt="Stream Helper Logo" width="36" height="36"> Stream Helper
 
 Streaming issues HUD.
 
@@ -9,11 +9,11 @@ It is a fork and extension of the original [Mic Helper](https://github.com/mercd
 As a gameplay streamer, it is easy to miss critical stream-breaking issues while focused on your game — whether your microphone was left muted, game audio failed to capture, OBS dropped frames due to network or encoder lag, or OBS disconnected altogether. Stream Helper eliminates these surprises by providing an in-game HUD overlay and system tray indicators that immediately alert you to issues over your game window. Designed with a client-server architecture, it seamlessly supports dual-PC streaming setups as well as single-PC rigs.
 
 Issues monitored and indicated in the HUD:
-- OBS Studio execution & connection issues _(no response from OBS WebSocket server)_
-- OBS Studio broadcast network issues _(dropped frames due to network congestion)_
-- OBS Studio rendering & encoding issues _(dropped frames due to rendering lag or encoder overload)_
-- Game audio capture issues _(audio playing in speakers/headphones differs from what is captured on the target channel in OBS Studio)_
-- Microphone mute status _(audio input device mute status in OS)_
+- <img src="assets/obs-disconnected.png" alt="OBS Disconnected" height="20"> OBS Studio execution & connection issues _(no response from OBS WebSocket server)_
+- <img src="assets/obs-network-issue.png" alt="OBS Network Issue" height="20"> OBS Studio broadcast network issues _(dropped frames due to network congestion)_
+- <img src="assets/obs-render-issue.png" alt="OBS Render Issue" height="20"> OBS Studio rendering & encoding issues _(dropped frames due to rendering lag or encoder overload)_
+- <img src="assets/sound-issue.png" alt="OBS Sound Capture Issue" height="20"> Game audio capture issues _(audio playing in speakers/headphones differs from what is captured on the target channel in OBS Studio)_
+- <img src="assets/mic-muted.png" alt="Microphone Muted" height="20"> Microphone mute status _(audio input device mute status in OS)_
 
 <p align="center">
   <img src="screenshot.jpg" alt="Stream Helper in-game overlay" width="100%">
@@ -23,11 +23,11 @@ Issues monitored and indicated in the HUD:
 
 Download the latest release for your platform from the [Releases](https://github.com/mercdev-corp/stream-helper/releases) page. Unzip the archive into a dedicated folder (e.g. `C:\Tools\StreamHelper` or any preferred directory).
 
-Run `StreamHelper.Server.exe` on the PC running OBS Studio (where your microphone is plugged in). Open settings to configure the OBS connection, select your desired microphone device, and choose the game audio capture source (change other options as needed).
+Run <img src="assets/app.ico" alt="StreamHelper.Server" width="16" height="16"> `StreamHelper.Server.exe` on the PC running OBS Studio (where your microphone is plugged in). Open settings to configure the OBS connection, select your desired microphone device, and choose the game audio capture source (change other options as needed).
 
 <img src="server-settings.png" alt="server settings window">
 
-Run `StreamHelper.Client.exe` on the gaming PC where you want to see HUD indications (and where game audio is playing). Open settings and select your server from the dropdown (change other options if needed). Drag, drop, and resize the overlay as needed.
+Run <img src="assets/app.ico" alt="StreamHelper.Client" width="16" height="16"> `StreamHelper.Client.exe` on the gaming PC where you want to see HUD indications (and where game audio is playing). Open settings and select your server from the dropdown (change other options if needed). Drag, drop, and resize the overlay as needed.
 
 <img src="client-settings-dual-pc-mode.png" alt="client settings window">
 
@@ -65,7 +65,7 @@ Stream Helper is an open-source project. Because releases are built directly via
 #### Where Does the App Go After Launching?
 Stream Helper is a **background system tray application** designed for minimal overhead. When launched, **no standard desktop window appears**. Instead:
 1. The application starts immediately in the **Windows System Tray / Notification Area** (near the clock in the bottom-right corner of your taskbar).
-2. If you do not immediately see the blue OBS logo icon, click the **`^` (Show hidden icons)** chevron on your taskbar.
+2. If you do not immediately see the blue OBS logo icon (<img src="assets/obs-logo-blue.png" alt="OBS logo blue" width="18" height="18">), click the **`^` (Show hidden icons)** chevron on your taskbar.
 3. **Right-click the tray icon** to open **Settings**, **Pause/Resume**, or **Exit**.
 
 ## Architecture
@@ -84,7 +84,7 @@ Supports both **Dual-PC mode** (listening to remote Server broadcasts and stream
 
 # UI
 
-System tray application on both server and client. As a system tray icon, it displays streaming issues, stream health, audio capture status, and microphone mute status, and provides a context menu with the following items:
+System tray application on both server and client. As a system tray icon, it displays streaming issues, stream health (<img src="assets/obs-logo-blue.png" alt="Healthy" height="18"> healthy / <img src="assets/obs-logo-red.png" alt="Alert" height="18"> issue), audio capture status, and microphone mute status, and provides a context menu with the following items:
 - Pause/Resume
 - Settings
 - Exit
@@ -97,19 +97,19 @@ The server application monitors OBS Studio, microphone mute status, and game aud
 
 The server-side system tray icon displays the following statuses and hover tooltips:
 
-| Status Condition | Icon Asset | Hover Tooltip |
-|---|---|---|
-| **Active / Healthy** | `obs-logo-blue.png` | `Helper is active` |
-| **Paused** | `pause.png` | `Helper is paused` |
-| **OBS Disconnected** | `obs-disconnected.png` | `OBS is not running` |
-| **OBS Reconnecting** | `obs-reconnect.png` | `OBS reconnecting` |
-| **OBS Network Issue** | `obs-network-issue.png` | `OBS network issue` |
-| **OBS Render/Encoding Issue** | `obs-render-issue.png` | `OBS render issue` |
-| **Microphone Muted** | `mic-muted.png` | `Microphone muted` |
-| **Microphone Disconnected** | `device-disconnected.png` | `Microphone disconnected` |
-| **OBS Capture Device Disconnected** | `device-disconnected.png` | `OBS capture device disconnected` |
-| **OBS Capture Device Muted** | `sound-muted.png` | `OBS capture device muted` |
-| **OBS Sound Capture Issue** | `sound-issue.png` | `OBS sound capture issue` |
+| Icon | Status Condition | Icon Asset | Hover Tooltip |
+|:---:|---|---|---|
+| <img src="assets/obs-logo-blue.png" alt="Active / Healthy" height="28"> | **Active / Healthy** | `obs-logo-blue.png` | `Helper is active` |
+| <img src="assets/pause.png" alt="Paused" height="28"> | **Paused** | `pause.png` | `Helper is paused` |
+| <img src="assets/obs-disconnected.png" alt="OBS Disconnected" height="28"> | **OBS Disconnected** | `obs-disconnected.png` | `OBS is not running` |
+| <img src="assets/obs-reconnect.png" alt="OBS Reconnecting" height="28"> | **OBS Reconnecting** | `obs-reconnect.png` | `OBS reconnecting` |
+| <img src="assets/obs-network-issue.png" alt="OBS Network Issue" height="28"> | **OBS Network Issue** | `obs-network-issue.png` | `OBS network issue` |
+| <img src="assets/obs-render-issue.png" alt="OBS Render/Encoding Issue" height="28"> | **OBS Render/Encoding Issue** | `obs-render-issue.png` | `OBS render issue` |
+| <img src="assets/mic-muted.png" alt="Microphone Muted" height="28"> | **Microphone Muted** | `mic-muted.png` | `Microphone muted` |
+| <img src="assets/device-disconnected.png" alt="Microphone Disconnected" height="28"> | **Microphone Disconnected** | `device-disconnected.png` | `Microphone disconnected` |
+| <img src="assets/device-disconnected.png" alt="OBS Capture Device Disconnected" height="28"> | **OBS Capture Device Disconnected** | `device-disconnected.png` | `OBS capture device disconnected` |
+| <img src="assets/sound-muted.png" alt="OBS Capture Device Muted" height="28"> | **OBS Capture Device Muted** | `sound-muted.png` | `OBS capture device muted` |
+| <img src="assets/sound-issue.png" alt="OBS Sound Capture Issue" height="28"> | **OBS Sound Capture Issue** | `sound-issue.png` | `OBS sound capture issue` |
 
 If more than one status is active at the same time, the system tray icon cycles through the active status icons once per second, and all active status descriptions are listed line-by-line in the tooltip on hover:
 
@@ -218,29 +218,29 @@ Exits the application.
 
 ### Behavior
 
-If OBS is not running, the server broadcasts the `obs disconnected` status to connected clients (tray icon displays `obs-disconnected`, hover tooltip: `OBS is not running`).
+If OBS is not running, the server broadcasts the `obs disconnected` status to connected clients (tray icon displays `obs-disconnected` <img src="assets/obs-disconnected.png" alt="OBS Disconnected" height="18">, hover tooltip: `OBS is not running`).
 
 The server checks for OBS availability periodically using a single-flight reconnection loop according to the configured retry timeout setting (default `5` seconds). When Stream Helper starts before OBS Studio (such as on Windows startup) or when OBS closes unexpectedly, reconnection attempts execute sequentially on the configured retry interval without accumulating background tasks or socket churn. Once OBS Studio launches, the next periodic retry automatically establishes the WebSocket connection, authenticates, transitions to `Connected`, and immediately clears the `obs disconnected` alert without requiring an application restart.
 
 #### Paused state
 
-When the server is in a paused state, it stops monitoring OBS and audio devices, suspends all active OBS reconnection loops, disconnects all connected clients, cleanly resets correlation engine state, and displays the `paused` status icon in the system tray (hover tooltip: `Helper is paused`). Resuming monitoring unpauses broadcasting and cleanly restarts OBS and microphone connection monitoring.
+When the server is in a paused state, it stops monitoring OBS and audio devices, suspends all active OBS reconnection loops, disconnects all connected clients, cleanly resets correlation engine state, and displays the `paused` status icon (<img src="assets/pause.png" alt="Paused" height="18">) in the system tray (hover tooltip: `Helper is paused`). Resuming monitoring unpauses broadcasting and cleanly restarts OBS and microphone connection monitoring.
 
 #### Active state
 
-When the server is active and no issues are detected with the OBS connection, stream health, audio capture, or microphone, it displays the default blue status icon in the system tray (hover tooltip: `Helper is active`).
+When the server is active and no issues are detected with the OBS connection, stream health, audio capture, or microphone, it displays the default blue status icon (<img src="assets/obs-logo-blue.png" alt="Active" height="18">) in the system tray (hover tooltip: `Helper is active`).
 
 ##### Microphone status monitoring
 
 The server monitors the selected microphone's status (subscribing to audio endpoint volume events or polling periodically) and broadcasts status updates to connected clients according to the following rules:
-- The server checks the selected microphone's status when plugged in. If the microphone is not available, the server displays the `device disconnected` status icon in the system tray and broadcasts `device disconnected` to all connected clients until the device becomes available again. The server checks whether the microphone becomes available periodically according to the retry timeout setting (hover tooltip: `Microphone disconnected`).
-- If the microphone is muted, the server broadcasts `mic muted` status to all connected clients and displays the `microphone muted` status icon in the system tray (hover tooltip: `Microphone muted`).
+- The server checks the selected microphone's status when plugged in. If the microphone is not available, the server displays the `device disconnected` status icon (<img src="assets/device-disconnected.png" alt="Device Disconnected" height="18">) in the system tray and broadcasts `device disconnected` to all connected clients until the device becomes available again. The server checks whether the microphone becomes available periodically according to the retry timeout setting (hover tooltip: `Microphone disconnected`).
+- If the microphone is muted, the server broadcasts `mic muted` status to all connected clients and displays the `microphone muted` status icon (<img src="assets/mic-muted.png" alt="Microphone Muted" height="18">) in the system tray (hover tooltip: `Microphone muted`).
 
 ##### Game audio capture monitoring
 
 The server monitors the audio capture status of the target device in OBS and broadcasts status updates to connected clients according to the following rules:
-- If the audio capture device is not found in OBS (or not yet selected), the server displays the `device disconnected` status icon in the system tray and broadcasts `device disconnected` to all connected clients until the device becomes available. The server checks if the audio capture device becomes available periodically according to the retry timeout setting (hover tooltip: `OBS capture device disconnected`).
-- If the audio capture device is found and muted, the server broadcasts `sound muted` status to all connected clients and displays the `sound muted` status icon in the system tray (hover tooltip: `OBS capture device muted`).
+- If the audio capture device is not found in OBS (or not yet selected), the server displays the `device disconnected` status icon (<img src="assets/device-disconnected.png" alt="Device Disconnected" height="18">) in the system tray and broadcasts `device disconnected` to all connected clients until the device becomes available. The server checks if the audio capture device becomes available periodically according to the retry timeout setting (hover tooltip: `OBS capture device disconnected`).
+- If the audio capture device is found and muted, the server broadcasts `sound muted` status to all connected clients and displays the `sound muted` status icon (<img src="assets/sound-muted.png" alt="Sound Muted" height="18">) in the system tray (hover tooltip: `OBS capture device muted`).
 - Changing or selecting the OBS Game Audio Capture Source immediately resets historical audio meters and clears active sound issue alerts.
 
 In addition to basic audio capture statuses, the server also monitors and compares an **RMS Envelope Correlation** between the game audio output and the audio captured by OBS:
@@ -256,7 +256,7 @@ In addition to basic audio capture statuses, the server also monitors and compar
 3. **On the OBS Side:** OBS WebSocket v5 natively provides the `InputVolumeMeters` event subscription (`EventSubscription::InputVolumeMeters`). OBS periodically emits current volume levels (peak and RMS) for each configured audio input without requiring custom audio capture plugins.
 4. **Comparison & Anomaly Detection:**
   * **Conditional Silence Detector (covers ~95% of real-world failures):**
-    * If the Gaming PC detects active audio (`RMS > -60.0 dBFS`, including quieter in-game sounds such as footsteps at `-48` to `-55 dBFS` or UI sounds at `-56 dBFS`) continuously for 1 second (10 readings at 100ms) while the corresponding audio source in OBS remains below the silence threshold (`RMS < -60.0 dBFS`) across the forward lag compensation window $[T, T + \text{lagWindow}]$, the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon, and displays `OBS sound capture issue` on tray hover.
+    * If the Gaming PC detects active audio (`RMS > -60.0 dBFS`, including quieter in-game sounds such as footsteps at `-48` to `-55 dBFS` or UI sounds at `-56 dBFS`) continuously for 1 second (10 readings at 100ms) while the corresponding audio source in OBS remains below the silence threshold (`RMS < -60.0 dBFS`) across the forward lag compensation window $[T, T + \text{lagWindow}]$, the server broadcasts the `sound issue` status to all connected clients, sets the `sound issue` tray icon (<img src="assets/sound-issue.png" alt="Sound Issue" height="18">), and displays `OBS sound capture issue` on tray hover.
     * **Immediate Recovery on OBS Audio:** The detector checks for non-silent OBS audio (`RMS >= -60.0 dBFS`) *first*, before evaluating client volume. Whenever OBS captures non-silent audio, the silence counter is immediately reset to 0 and any active silence alert is cleared—even if the gaming PC audio is currently quiet (`RMS <= -60.0 dBFS`).
     * If the game itself is silent (`RMS <= -60.0 dBFS`) while OBS is also silent, alert generation is suppressed, the counter decays (`-2` per silent reading), and isolated single-reading spikes after silent periods do not re-latch active issue confirmation, while continuous audio with brief 100ms micro-gaps still accumulates and triggers once 1 second of net active audio is reached.
   * **Limiter-, Gain-Offset-, and Silence-Floor-Resilient Full Mode (`PearsonCorrelationEngine`):**
@@ -275,13 +275,13 @@ In addition to basic audio capture statuses, the server also monitors and compar
 
 The server periodically checks OBS status and stream health, broadcasting updates to all connected clients.
 
-The server checks process health each second via the WebSocket connection. If OBS closes or crashes, all frame and reconnect alerts clear immediately, and the status transitions to `obs disconnected`.
+The server checks process health each second via the WebSocket connection. If OBS closes or crashes, all frame and reconnect alerts clear immediately, and the status transitions to `obs disconnected` (<img src="assets/obs-disconnected.png" alt="OBS Disconnected" height="18">).
 
 Via `GetStreamStatus`, the server retrieves information about active streaming and recording. If an output is active, the server monitors and broadcasts:
-- Increasing reconnection attempts: broadcasts `obs reconnecting` status to all connected clients, sets `obs reconnect` icon in the system tray, and displays `OBS reconnecting` tooltip on hover. Clears when reconnect succeeds or stream is stopped.
-- Number of skipped frames due to network issues exceeds the threshold across the configured evaluation period (default 5s, range 1–300s): broadcasts `obs network issue` status to all connected clients, sets `obs network issue` icon in the system tray, and displays `OBS network issue` tooltip on hover. Clears after a 5-second cooldown below threshold or when streaming stops.
+- Increasing reconnection attempts: broadcasts `obs reconnecting` status to all connected clients, sets `obs reconnect` icon (<img src="assets/obs-reconnect.png" alt="OBS Reconnecting" height="18">) in the system tray, and displays `OBS reconnecting` tooltip on hover. Clears when reconnect succeeds or stream is stopped.
+- Number of skipped frames due to network issues exceeds the threshold across the configured evaluation period (default 5s, range 1–300s): broadcasts `obs network issue` status to all connected clients, sets `obs network issue` icon (<img src="assets/obs-network-issue.png" alt="OBS Network Issue" height="18">) in the system tray, and displays `OBS network issue` tooltip on hover. Clears after a 5-second cooldown below threshold or when streaming stops.
 
-Via `GetStats`, the server retrieves information about skipped frames due to rendering lag or encoder overload. If the rate across the evaluation period exceeds the threshold, it broadcasts the `obs render issue` status to all connected clients, sets the `obs render issue` icon in the system tray, and displays `OBS render issue` tooltip on hover. Clears after a 5-second cooldown below threshold.
+Via `GetStats`, the server retrieves information about skipped frames due to rendering lag or encoder overload. If the rate across the evaluation period exceeds the threshold, it broadcasts the `obs render issue` status to all connected clients, sets the `obs render issue` icon (<img src="assets/obs-render-issue.png" alt="OBS Render Issue" height="18">) in the system tray, and displays `OBS render issue` tooltip on hover. Clears after a 5-second cooldown below threshold.
 
 ## Client application
 
@@ -293,21 +293,21 @@ If `Game audio monitoring` is enabled, it uses `WASAPI Loopback Capture` to moni
 
 The client-side system tray icon displays the following statuses and hover tooltips:
 
-| Status Condition | Icon Asset | Hover Tooltip |
-|---|---|---|
-| **Active / Healthy** | `obs-logo-blue.png` | `Helper is active` |
-| **Paused** | `pause.png` | `Helper is paused` |
-| **Server Disconnected** | `server-disconnected.png` | `Server not found` *(Dual-PC only)* |
-| **Microphone Muted** | `mic-muted.png` | `Microphone muted` |
-| **Device Disconnected** | `device-disconnected.png` | `Microphone disconnected` / `OBS capture device disconnected` |
-| **OBS Disconnected** | `obs-disconnected.png` | `OBS is not running` |
-| **OBS Reconnecting** | `obs-reconnect.png` | `OBS reconnecting` |
-| **OBS Network Issue** | `obs-network-issue.png` | `OBS network issue` |
-| **OBS Render/Encoding Issue** | `obs-render-issue.png` | `OBS render issue` |
-| **Game Audio Not Selected** | `sound-muted.png` | `Game audio not selected` *(Client local)* |
-| **Game Audio Device Missing** | `sound-issue.png` | `Game audio not found` *(Client local)* |
-| **OBS Capture Device Muted** | `sound-muted.png` | `OBS capture device muted` |
-| **OBS Sound Capture Issue** | `sound-issue.png` | `OBS sound capture issue` |
+| Icon | Status Condition | Icon Asset | Hover Tooltip |
+|:---:|---|---|---|
+| <img src="assets/obs-logo-blue.png" alt="Active / Healthy" height="28"> | **Active / Healthy** | `obs-logo-blue.png` | `Helper is active` |
+| <img src="assets/pause.png" alt="Paused" height="28"> | **Paused** | `pause.png` | `Helper is paused` |
+| <img src="assets/server-disconnected.png" alt="Server Disconnected" height="28"> | **Server Disconnected** | `server-disconnected.png` | `Server not found` *(Dual-PC only)* |
+| <img src="assets/mic-muted.png" alt="Microphone Muted" height="28"> | **Microphone Muted** | `mic-muted.png` | `Microphone muted` |
+| <img src="assets/device-disconnected.png" alt="Device Disconnected" height="28"> | **Device Disconnected** | `device-disconnected.png` | `Microphone disconnected` / `OBS capture device disconnected` |
+| <img src="assets/obs-disconnected.png" alt="OBS Disconnected" height="28"> | **OBS Disconnected** | `obs-disconnected.png` | `OBS is not running` |
+| <img src="assets/obs-reconnect.png" alt="OBS Reconnecting" height="28"> | **OBS Reconnecting** | `obs-reconnect.png` | `OBS reconnecting` |
+| <img src="assets/obs-network-issue.png" alt="OBS Network Issue" height="28"> | **OBS Network Issue** | `obs-network-issue.png` | `OBS network issue` |
+| <img src="assets/obs-render-issue.png" alt="OBS Render/Encoding Issue" height="28"> | **OBS Render/Encoding Issue** | `obs-render-issue.png` | `OBS render issue` |
+| <img src="assets/sound-muted.png" alt="Game Audio Not Selected" height="28"> | **Game Audio Not Selected** | `sound-muted.png` | `Game audio not selected` *(Client local)* |
+| <img src="assets/sound-issue.png" alt="Game Audio Device Missing" height="28"> | **Game Audio Device Missing** | `sound-issue.png` | `Game audio not found` *(Client local)* |
+| <img src="assets/sound-muted.png" alt="OBS Capture Device Muted" height="28"> | **OBS Capture Device Muted** | `sound-muted.png` | `OBS capture device muted` |
+| <img src="assets/sound-issue.png" alt="OBS Sound Capture Issue" height="28"> | **OBS Sound Capture Issue** | `sound-issue.png` | `OBS sound capture issue` |
 
 If more than one status is active at the same time, the status icon in the system tray cycles through the active status icons once per second, and all active status descriptions are listed line-by-line in the tooltip on hover:
 
@@ -330,12 +330,12 @@ Pauses and resumes consuming statuses from the server. State is saved to setting
 
 Opens the settings dialog as a movable window. Settings are saved and applied automatically upon modification and on client startup. If the dialog is closed, the application continues running in the tray. Settings are saved in the same directory as the application in `stream-helper-client-settings.json`.
 
-When the settings dialog is opened, the overlay enters WYSIWYG edit mode (displaying a preview overlay, e.g., `microphone muted`) with a dashed outline, 4 corner resize handles, and a real-time size badge. Users can drag and drop the overlay to position it anywhere on screen, and resize it with a locked 1:1 aspect ratio using:
+When the settings dialog is opened, the overlay enters WYSIWYG edit mode (displaying a preview overlay, e.g., `microphone muted` <img src="assets/mic-muted.png" alt="Microphone Muted Preview" height="18">) with a dashed outline, 4 corner resize handles, and a real-time size badge. Users can drag and drop the overlay to position it anywhere on screen, and resize it with a locked 1:1 aspect ratio using:
 - **Mouse Wheel:** Scroll up/down anywhere over the overlay to smoothly enlarge or shrink it.
 - **Corner Handles:** Click and drag any of the 4 corner handles (or bottom-right diagonal grip).
 - **Settings Slider:** Directly adjust the **Overlay size** slider in the Settings dialog.
 
-Each change to the overlay position (geometric center) and dimensions is saved and applied immediately. Resized versions of status images displayed by the overlay (such as `microphone muted`, `server disconnected`, OBS issues, audio capture alerts, etc.) are pre-rendered and cached to disk on save to ensure zero CPU/GPU overhead during runtime.
+Each change to the overlay position (geometric center) and dimensions is saved and applied immediately. Resized versions of status images displayed by the overlay (such as `microphone muted` <img src="assets/mic-muted.png" alt="Microphone Muted" height="16">, `server disconnected` <img src="assets/server-disconnected.png" alt="Server Disconnected" height="16">, OBS issues <img src="assets/obs-disconnected.png" alt="OBS Disconnected" height="16">, audio capture alerts <img src="assets/sound-issue.png" alt="Audio Issue" height="16">, etc.) are pre-rendered and cached to disk on save to ensure zero CPU/GPU overhead during runtime.
 
 Settings options:
 
@@ -359,7 +359,7 @@ Dropdown list of server IP addresses currently broadcasting on the local network
 
 Defaults to the first available IP address from the list and saves it to settings.
 
-If not selected or unavailable, the application displays the `server disconnected` status icon, shows the `Server not found` tooltip on hover, and will neither attempt to connect nor collect/send audio telemetry. Changes are saved to settings and applied immediately.
+If not selected or unavailable, the application displays the `server disconnected` status icon (<img src="assets/server-disconnected.png" alt="Server Disconnected" height="18">), shows the `Server not found` tooltip on hover, and will neither attempt to connect nor collect/send audio telemetry. Changes are saved to settings and applied immediately.
 
 If the saved IP address is not found or accessible on the local network, it is shown as the first selected option in red strikethrough text, followed by other available server IP addresses in alphabetical order. If not changed manually, it remains preserved in settings despite not being detected on the network.
 
@@ -371,7 +371,7 @@ Enables or disables monitoring and sending RMS (root-mean-square volume in dBFS)
 
 Dropdown selector for the default audio output device or the dedicated audio interface assigned to the game.
 
-Defaults to the system's default audio output device. Saved to settings and applied immediately on change. If not selected while `Game audio monitoring` is enabled, the application displays the `sound muted` status icon in the system tray and shows `Game audio not selected` tooltip on hover.
+Defaults to the system's default audio output device. Saved to settings and applied immediately on change. If not selected while `Game audio monitoring` is enabled, the application displays the `sound muted` status icon (<img src="assets/sound-muted.png" alt="Sound Muted" height="18">) in the system tray and shows `Game audio not selected` tooltip on hover.
 
 If the saved audio output is not found in the system, it is shown as the first selected option in red strikethrough text, followed by the system default audio output and other available sound outputs in alphabetical order. If the selection is not changed manually, it remains preserved in settings despite not being found in the system.
 
@@ -413,16 +413,16 @@ Exits the application.
 
 ### Behavior
 
-When the client is in a paused state, it does not connect to the server, does not collect or send audio telemetry, and the overlay is hidden. It also displays the `paused` status icon in the system tray (hover tooltip: `Helper is paused`).
+When the client is in a paused state, it does not connect to the server, does not collect or send audio telemetry, and the overlay is hidden. It also displays the `paused` status icon (<img src="assets/pause.png" alt="Paused" height="18">) in the system tray (hover tooltip: `Helper is paused`).
 
 If the client is not in a paused state, it attempts to connect to the server and behaves according to the following rules:
-- If the server is not available, the client displays the `server disconnected` status icon in the tray, shows `Server not found` tooltip on hover, and displays the pulsing `server disconnected` overlay at the configured position. The client attempts to reconnect according to the retry timeout setting.
+- If the server is not available, the client displays the `server disconnected` status icon (<img src="assets/server-disconnected.png" alt="Server Disconnected" height="18">) in the tray, shows `Server not found` tooltip on hover, and displays the pulsing `server disconnected` overlay at the configured position. The client attempts to reconnect according to the retry timeout setting.
 - If the server is available, the client listens to incoming state changes and behaves accordingly:
-  - Displays the default blue icon when no issues or alerts are active.
+  - Displays the default blue icon (<img src="assets/obs-logo-blue.png" alt="Active" height="18">) when no issues or alerts are active.
   - Displays the corresponding status icon and tooltip text for incoming statuses (matching the server) and displays the pulsing overlay icon at the configured position. If more than one status is active simultaneously, the overlay cycles through them according to the configured number of animation cycles (1 to 10 cycles, defaults to 1).
 - If `Game audio monitoring` is enabled (if any of the following issues occur, the application stops collecting and transmitting audio data to the server):
-  - If the audio output device is not configured: displays the `sound muted` icon in the system tray, shows `Game audio not selected` tooltip on hover, and displays the pulsing `sound muted` overlay icon.
-  - If the configured audio output device is not found in the system: displays the `sound issue` icon in the system tray, shows `Game audio not found` tooltip on hover, and displays the pulsing `sound issue` overlay icon.
+  - If the audio output device is not configured: displays the `sound muted` icon (<img src="assets/sound-muted.png" alt="Sound Muted" height="18">) in the system tray, shows `Game audio not selected` tooltip on hover, and displays the pulsing `sound muted` overlay icon.
+  - If the configured audio output device is not found in the system: displays the `sound issue` icon (<img src="assets/sound-issue.png" alt="Sound Issue" height="18">) in the system tray, shows `Game audio not found` tooltip on hover, and displays the pulsing `sound issue` overlay icon.
 
 When displayed, the overlay is always click-through and renders on top of all other windows (including borderless and fullscreen games).
 
@@ -439,7 +439,7 @@ Run `build_all.ps1` to install dependencies and build the application. It compil
 
 ### Build Artifacts & Distribution
 
-- **Standalone Executables:** The compiled `.exe` files (`StreamHelper.Server.exe` and `StreamHelper.Client.exe`) in `./bin` are fully self-contained, portable single-file binaries bundling all required .NET runtimes, libraries, and assets. They can be copied anywhere and executed with zero external dependencies.
+- **Standalone Executables:** The compiled `.exe` files (<img src="assets/app.ico" alt="App Icon" width="16" height="16"> `StreamHelper.Server.exe` and `StreamHelper.Client.exe`) in `./bin` are fully self-contained, portable single-file binaries bundling all required .NET runtimes, libraries, and assets. They can be copied anywhere and executed with zero external dependencies.
 - **`*.pdb` Files:** Any `*.pdb` (Program Database) files generated in `./bin` contain debug symbols used only for debugging and stack trace symbol resolution. They are **not required** for running or distributing the applications and can be safely deleted or omitted.
 
 ### Supported Platforms & Architectures
